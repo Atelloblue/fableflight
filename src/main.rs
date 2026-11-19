@@ -1245,6 +1245,11 @@ impl Game {
             }
         }
         let alt = args.alt.unwrap_or_else(|| ground_elev(&src, lat, lon) + args.agl.unwrap_or(450.0));
+        // (How high above the ground it starts, for the wind there.)
+        let spawn_agl = match args.alt {
+            Some(a) => a - ground_elev(&src, lat, lon),
+            None => args.agl.unwrap_or(450.0),
+        };
         let spec = args.aircraft.as_deref().and_then(aircraft::by_key).unwrap_or(aircraft::BUILTIN[0]);
         let mut plane = Plane::spawn(spec, lat.to_radians(), lon.to_radians(), alt, args.heading.to_radians(), args.speed.map(|kt| kt / 1.94384).unwrap_or(spec.cruise));
         if args.ship {
@@ -1364,7 +1369,7 @@ impl Game {
         wx.real_time = prefs.real_time && !set_time;
         // The spawn speed is through the air: start out moving with the wind,
         // or a headwind starts it off fast (and climbing it away).
-        plane.wind = wx.steady(plane.pos, 300.0);
+        plane.wind = wx.steady(plane.pos, spawn_agl.max(2.0));
         plane.vel += plane.wind;
         let egui_ctx = egui::Context::default();
         load_fonts(&egui_ctx);
@@ -1814,7 +1819,9 @@ impl Game {
         self.plane.fuel = self.spec.fuel_kg * self.menu.fuel;
         self.plane.payload = self.start_payload();
         // The spawn speed is through the air, not over the ground.
-        self.plane.wind = self.wx.steady(self.plane.pos, 300.0);
+        let (la, lo, h) = geo::pos_to_lla(self.plane.pos);
+        let agl = self.world.ground(la, lo).map_or(300.0, |g| h - g.h);
+        self.plane.wind = self.wx.steady(self.plane.pos, agl.max(2.0));
         self.plane.vel += self.plane.wind;
         if let Some(spec) = &self.damage_spec {
             self.plane.dmg.apply_spec(spec);
