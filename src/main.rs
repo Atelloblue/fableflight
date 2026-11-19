@@ -64,6 +64,7 @@ mod sources;
 mod traffic;
 mod trees;
 mod ocean;
+mod orographic;
 mod shore;
 mod skyglow;
 mod snow;
@@ -1174,6 +1175,8 @@ struct Game {
     mp_mirror: bool,
     /// real weather (sets `wx` while `wx.live` is on)
     livewx: livewx::LiveWx,
+    /// the ground along the wind line: ridge lift, lee waves and rotors (orographic.rs)
+    oro: orographic::Orography,
     /// the real clouds on the start screen's globe
     gclouds: globeclouds::GlobeClouds,
     /// the start time has been set by hand (the menu's Time sliders, or
@@ -1426,6 +1429,7 @@ impl Game {
             cockpit_controls,
             pit_blocks,
             livewx: livewx::LiveWx::new(),
+            oro: orographic::Orography::default(),
             gclouds: globeclouds::GlobeClouds::default(),
             menu_time_set: set_time,
             menu_time_seen: (f64::NAN, f64::NAN),
@@ -4951,7 +4955,20 @@ impl Game {
             let water = g.map(|g| g.water).unwrap_or(false);
             self.wx.sun = self.sun_dir().dot(self.plane.pos.normalize());
             // Turbulence, thermals and storm drafts ride on top of the gusting wind.
-            let air = self.wx.air(self.plane.pos, agl, self.time, water);
+            let mut air = self.wx.air(self.plane.pos, agl, self.time, water);
+            // The ground's shape: ridge lift, lee waves, and the rotor under them.
+            let world = &self.world;
+            self.oro.update(&self.wx, self.plane.pos, self.time, |la, lo| world.ground(la, lo).map(|g| g.h));
+            let oro = self.oro.at(&self.wx, self.plane.pos, agl);
+            if oro.rotor > 0.0 {
+                air.sigma_w = air.sigma_w.hypot(oro.rotor);
+                air.sigma_h = air.sigma_h.hypot(oro.rotor);
+                // (A rotor's eddies are a few hundred metres across.)
+                let k = (oro.rotor / 2.0).min(1.0);
+                air.len_w += (air.len_w.min(250.0) - air.len_w) * k;
+                air.len_h += (air.len_h.min(250.0) - air.len_h) * k;
+            }
+            air.draft += oro.w;
             self.plane.air = air;
             self.plane.wind = self.wx.at(self.plane.pos, agl, self.time) + self.plane.pos.normalize() * air.draft + air.gust;
             // The rain on the windows: only under (or in) a cloud that rains, the
