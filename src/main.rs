@@ -20,6 +20,7 @@ mod fluid;
 mod gputime;
 mod geo;
 mod globeclouds;
+mod gust;
 mod hangar;
 mod hangar_ui;
 mod bind;
