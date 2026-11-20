@@ -39,6 +39,7 @@ fn shaders_validate() {
         ("taa", include_str!("../src/shaders/taa.wgsl")),
         ("airfield", include_str!("../src/shaders/airfield.wgsl")),
         ("lights", include_str!("../src/shaders/lights.wgsl")),
+        ("scenery", include_str!("../src/shaders/scenery.wgsl")),
     ] {
         ok &= check(name, &format!("{common}\n{src}"));
     }

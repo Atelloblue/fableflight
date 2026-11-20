@@ -58,6 +58,7 @@ mod mvt;
 mod plane;
 mod render;
 mod roads;
+mod scenery;
 mod skin;
 mod sources;
 mod traffic;
@@ -736,6 +737,11 @@ fn parse_args() -> Args {
                 a.no_hud = true;
                 used = 1;
             }
+            // Without the hand-made airport scenery: the airfields as the game builds them.
+            "--no-scenery" => {
+                scenery::DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                used = 1;
+            }
             "--fuel" => a.fuel = num(&v, i).map(|f| f.clamp(0.0, 1.0)),
             "--arcade" => {
                 a.arcade = true;
@@ -811,7 +817,7 @@ fn parse_args() -> Args {
                 used = 1;
             }
             "--help" | "-h" => {
-                println!("fablegame [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--max-zoom 8..19] [--cockpit] [--fov DEG] [--no-vsync] [--no-taa] [--graphics low|medium|high|ultra] [--render-scale 0.5..2] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--mute] [--lang en|fr] [--fuel 0..1] [--cold] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage rwing=4.3,laileron=0,rudder=0.5,prop=0.5,engine=0.4,oil=0.6,crack=1,nosegear=0,lsnap=3.4,rfold=3.2,tail=2.0]");
+                println!("fablegame [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--max-zoom 8..19] [--cockpit] [--fov DEG] [--no-vsync] [--no-taa] [--graphics low|medium|high|ultra] [--render-scale 0.5..2] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--mute] [--lang en|fr] [--fuel 0..1] [--cold] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--no-scenery] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage rwing=4.3,laileron=0,rudder=0.5,prop=0.5,engine=0.4,oil=0.6,crack=1,nosegear=0,lsnap=3.4,rfold=3.2,tail=2.0]");
                 std::process::exit(0);
             }
             other => {
@@ -1127,6 +1133,8 @@ struct Game {
     name_rx: Option<std::sync::mpsc::Receiver<String>>,
     last_click: f64,
     n_cars: usize,
+    /// hand-made scenery objects drawn last frame (for the credits)
+    n_scenery: usize,
     /// how much city is around (0..1), for the orange skyglow at night
     city_glow: f32,
     skyglow: skyglow::SkyGlow,
@@ -1267,6 +1275,7 @@ impl Game {
         debug_assert_eq!(solids.len() as u32, airmodels::BASE);
         solids.extend(airmodels::build());
         r.set_inst_meshes(&solids);
+        r.set_scenery(scenery::packs());
         let mut menu = menu::Menu::new(lat, lon, args.hour);
         menu.fuel = args.fuel.unwrap_or(menu.fuel);
         menu.cold = args.cold;
@@ -1391,7 +1400,7 @@ impl Game {
             g_slow: 1.0, last_bump: 0.0, was_ground: false, prev_vs: 0.0, prev_gear: plane.gear, prev_flaps: plane.flaps, quit: false,
             mode: if args.menu.unwrap_or(true) { Mode::Menu } else { Mode::Fly }, menu, menu_go: args.menu_go, heading: args.heading.to_radians(), destr: destruct::Destruction::new(secs.to_bits()),
             sheds: damage::Sheds::default(), fx_anchor: plane.pos, fx_shift: DVec3::ZERO, smoke_acc: 0.0, flash: Vec::new(), airport_note: (String::new(), -100.0), weapon_flash: None, kills: Vec::new(), damage_spec: args.damage.clone(), wreck_dirty: false, wreck_t: 0.0, wreck_seen: 0.0,
-            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, city_glow: 0.0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, plane, weapons,
+            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, n_scenery: 0, city_glow: 0.0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, plane, weapons,
             airport_rx: None, hold_spot: None,
             prefs_lang: args.lang.or(prefs.lang),
             prefs_t: 0.0,
@@ -5971,6 +5980,7 @@ impl Game {
             }
         }
         let mut insts = Vec::new();
+        let mut scenery = Vec::new();
         let mut fall = Vec::new();
         let mut air_lights = own_lights;
         if !in_menu {
@@ -5981,7 +5991,8 @@ impl Game {
             self.destr.instances(cam, &mut insts, &mut fall);
             self.destr.skin_frame(cam);
             self.destr.upload_skins(&self.r);
-            self.world.airport_instances(cam, self.wx.wind_from as f32, (self.wx.wind * 1.94384) as f32, self.time, &mut insts, &mut air_lights);
+            self.world.airport_instances(cam, (self.wx.wind_from as f32, (self.wx.wind * 1.94384) as f32), self.time, &mut insts, &mut scenery, &mut air_lights);
+            self.n_scenery = scenery.len();
             self.world.photo_beacons(cam, &mut air_lights);
         }
         self.live.step(&self.src, (!in_menu).then_some(self.plane.pos));
@@ -6062,7 +6073,7 @@ impl Game {
         let mut shot = match self.shots.first() {
             Some((t, _, _)) if self.real >= *t => {
                 // Logged with each scripted shot, for comparing builds.
-                log::info!("fps {:.1}  rain {:.2} (glass {:.2}, wet {:.2}, hail {:.2})  sigma {:.2} draft {:.1}", self.fps, self.cam_rain, self.wx.rain, self.glass.wet, self.cam_hail, self.plane.air.sigma_w, self.plane.air.draft);
+                log::info!("fps {:.1}  rain {:.2} (glass {:.2}, wet {:.2}, hail {:.2})  sigma {:.2} draft {:.1}  scenery {}", self.fps, self.cam_rain, self.wx.rain, self.glass.wet, self.cam_hail, self.plane.air.sigma_w, self.plane.air.draft, scenery.len());
                 Some(self.shots.remove(0).1)
             }
             _ => None,
@@ -6097,7 +6108,7 @@ impl Game {
             self.lightning.segments(cam, dt, &mut bolts);
         }
         let rain_drops = if in_menu || (self.cam_rain < 0.002 && self.cam_blow < 0.01) { 0 } else { render::RAIN_DROPS };
-        self.r.render(Frame { rain_drops, bolts, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
+        self.r.render(Frame { rain_drops, bolts, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, scenery, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
         self.finish_mcp_shots();
         if (had_shots && std::env::args().any(|a| a == "--shot") && self.record.is_none()) || rec_done {
             self.quit = true;
@@ -6632,6 +6643,11 @@ impl Game {
         }
         if self.mode != Mode::Menu && self.snow == snow::Mode::Auto && self.snowmap.shown().is_some() {
             live += t!("  ·  Snow cover: IMS, U.S. National Ice Center (NSIDC)", "  ·  Enneigement : IMS, U.S. National Ice Center (NSIDC)");
+        }
+        // The hand-made Antwerp scenery is built on Flemish open data (Modellicentie
+        // voor gratis hergebruik: GRB footprints, DHMV II heights, the 2025 orthophoto).
+        if self.mode != Mode::Menu && self.n_scenery > 0 {
+            live += t!("  ·  EBAW: Bron: GRB, DHMV II, Luchtopnamen Digitaal Vlaanderen", "  ·  EBAW : Bron: GRB, DHMV II, Luchtopnamen Digitaal Vlaanderen");
         }
         if self.mode == Mode::Menu && self.gclouds.shown {
             live += t!("  ·  Clouds: Live Cloud Maps (Matt Eason), contains modified EUMETSAT data", "  ·  Nuages : Live Cloud Maps (Matt Eason), contient des données EUMETSAT modifiées");
