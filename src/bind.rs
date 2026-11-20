@@ -145,6 +145,7 @@ pub const ACTIONS: &[Action] = &[
     act("ap_alt_down", KeyCode::Semicolon, "Altitude preselect down", "Altitude présélectionnée : moins"),
     act("ap_alt_up", KeyCode::Quote, "Altitude preselect up", "Altitude présélectionnée : plus"),
     act("heading_sync", KeyCode::KeyK, "Heading indicator to compass", "Recaler le conservateur de cap"),
+    act("mouse_yoke", KeyCode::KeyJ, "Mouse yoke on / off", "Manche à la souris : activer / couper"),
     act("camera", KeyCode::KeyC, "Chase / cockpit camera", "Caméra extérieure / cockpit"),
     act("tail_view", KeyCode::F6, "Toggle fixed rear view", "Activer / quitter la vue arrière fixe"),
     act("hud", KeyCode::KeyH, "Hide / show the HUD", "Masquer / afficher le HUD"),

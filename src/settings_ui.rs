@@ -343,6 +343,14 @@ impl Game {
         card(ui, t!("Language", "Langue"), |ui| {
             row(ui, t!("Interface language", "Langue de l'interface"), "", |ui| self.language_picker(ui));
         });
+        card(ui, t!("Display", "Affichage"), |ui| {
+            row(ui, t!("Full screen", "Plein écran"), t!("F11 or Alt+Enter switches at any time", "F11 ou Alt+Entrée bascule à tout moment"), |ui| {
+                let mut on = self.window.fullscreen().is_some();
+                if menu::switch(ui, &mut on).changed() {
+                    self.set_fullscreen(on);
+                }
+            });
+        });
         card(ui, t!("HUD and minimap", "HUD et mini-carte"), |ui| {
             row(ui, "HUD", t!("key H in flight", "touche H en vol"), |ui| {
                 menu::switch(ui, &mut self.show_hud);
