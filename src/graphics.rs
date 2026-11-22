@@ -205,6 +205,18 @@ impl Graphics {
         });
         if INTEGRATED.load(std::sync::atomic::Ordering::Relaxed) && matches!(self.matches(), Some(Preset::Medium | Preset::High | Preset::Ultra) | None) {
             note(ui, t!("graphics.integrated_note"));
+        }        row(ui, t!("graphics.dynamic"), t!("graphics.dynamic_hint"), |ui| {
+            menu::switch(ui, &mut self.dynamic);
+        });
+        if self.dynamic {
+            row(ui, t!("graphics.dynamic_target"), t!("graphics.dynamic_target_hint"), |ui| {
+                menu::segments(ui, |ui| {
+                    for f in DYN_FPS {
+                        menu::seg(ui, &mut self.dyn_fps, f, &if f == 0 { t!("graphics.dynamic_display").to_owned() } else { f.to_string() });
+                    }
+                });
+            });
+            note(ui, t!("graphics.dynamic_note"));
         }
     }
 

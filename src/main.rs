@@ -20,6 +20,7 @@ mod fsr3;
 mod fsr4;
 mod fgmodel;
 mod fluid;
+mod dynamic;
 mod gputime;
 mod geo;
 mod globeclouds;
@@ -295,6 +296,8 @@ struct Args {
     /// `graphics::integrated_preset` until the graphics settings are saved)
     graphics: Option<graphics::Preset>,
     storm_quality: Option<graphics::Level>,
+    /// --dynamic FPS: dynamic quality on for this run, aiming for FPS (0: the display's)
+    dynamic: Option<u16>,
     render_scale: Option<f32>,
     upscaler: Option<graphics::Upscaler>,
     /// log the frame rate once a second (average and slowest frame)
@@ -401,7 +404,7 @@ struct Args {
     mcp_port: u16,
 }
 
-const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
+const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
 
 fn parse_args() -> Args {
     let v: Vec<String> = std::env::args().skip(1).collect();
@@ -447,6 +450,7 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
         taa: true,
         graphics: None,
         storm_quality: None,
+        dynamic: None,
         render_scale: None,
         upscaler: None,
         fps_log: false,
@@ -865,6 +869,7 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
                 let s = req(flag, i)?;
                 a.graphics = Some(graphics::Preset::parse(s).ok_or_else(|| format!("{flag}: expected very-low, low, medium, high or ultra, got '{s}'"))?);
             }
+            "--dynamic" => a.dynamic = Some(req_num(flag, i)?.clamp(0.0, 240.0) as u16),
             "--storm-quality" => {
                 let s = req(flag, i)?;
                 a.storm_quality = Some(graphics::Level::parse(s).filter(|l| *l != graphics::Level::Off).ok_or_else(|| format!("{flag}: expected low, medium, high or ultra, got '{s}'"))?);
@@ -1193,6 +1198,13 @@ struct Game {
     /// and what was last handed to the renderer and world
     gfx: graphics::Graphics,
     gfx_applied: Option<graphics::Graphics>,
+    /// what is drawn with: `gfx`, or below it under dynamic quality (dynamic.rs)
+    gfx_eff: graphics::Graphics,
+    dynq: dynamic::Dynamic,
+    /// storm cells were on screen last frame (dynamic quality lowers them first)
+    storms_seen: bool,
+    /// dynamic quality asked for on the command line (so it runs in --bench too)
+    dyn_cli: bool,
     /// where the aircraft was drawn last frame, relative to that frame's camera
     prev_plane: Mat4,
     /// centre and half size of the aircraft in its body frame
@@ -1510,6 +1522,10 @@ impl Game {
         if let Some(l) = args.storm_quality {
             gfx.storms = l;
         }
+        if let Some(f) = args.dynamic {
+            gfx.dynamic = true;
+            gfx.dyn_fps = f;
+        }
         gfx.vsync &= args.vsync;
         if args.bench.is_some() {
             // the graphics test measures the GPU, not a frame limit
@@ -1723,7 +1739,7 @@ impl Game {
             gkey: src.google.key(), gkey_show: false, gm_logo: None, stills: std::collections::HashMap::new(), window, r, world, src, spec, model, piece_mesh, group_mesh, piece_cut, piece_inner, group_pivots, hangar: Vec::new(), building: Vec::new(), crashed: false, crash: None, crash_real: 0.0, egui_ctx, egui_state, keys: HashSet::new(), drag: false, lean_drag: None, last_cursor: None,
             minimap: minimap::Minimap::new(&prefs),
             cam_yaw: cy.to_radians(), cam_pitch: cp, cam_dist: cd, cam_mode: args.start_view.unwrap_or(prefs.cam_mode), view_before_tail: 0, cam_pos, cam_dir: -plane.forward(), cam_look: plane.pos, orbit: 0.0, cam_rise: 0.0, cam_clear_t: 0.0, cam_ang: None, cam_hold: 0.0,
-            utc: (args.hour - lon / 15.0).rem_euclid(24.0), doy: args.day.unwrap_or(doy), wx, time: 0.0, real: 0.0, last: Instant::now(), acc: 0.0, wave_off: DVec2::ZERO, shore: shore::Shore::default(), ocean_off: DVec2::ZERO, prev_cam: cam_pos, prev_vp: [[0.0; 4]; 4], gfx, gfx_applied: None, prev_plane: Mat4::IDENTITY, plane_box, lamps,
+            utc: (args.hour - lon / 15.0).rem_euclid(24.0), doy: args.day.unwrap_or(doy), wx, time: 0.0, real: 0.0, last: Instant::now(), acc: 0.0, wave_off: DVec2::ZERO, shore: shore::Shore::default(), ocean_off: DVec2::ZERO, prev_cam: cam_pos, prev_vp: [[0.0; 4]; 4], gfx, gfx_applied: None, gfx_eff: gfx, dynq: dynamic::Dynamic::default(), storms_seen: false, dyn_cli: args.dynamic.is_some(), prev_plane: Mat4::IDENTITY, plane_box, lamps,
             frame: 0, fps: 60.0, fps_log: (args.fps_log, Instant::now(), 0, 0.0), paused: false, show_help: false, show_hud: !args.no_hud && prefs.show_hud, hud_cockpit: prefs.hud_cockpit, path_marker: prefs.path_marker, arcade: args.arcade || prefs.arcade, goto_open: false, goto_text: String::new(), goto_rx: None,
             status, status_until: 8.0, shots: args.shots.clone(), crash_at: args.crash_at, boost_at: args.boost_at, stage_at: args.stage_at, engines: args.engines, hold: args.hold, gilrs: open_gamepads(), pad: Controls::default(), pad_id: None, pad_fixed: Vec::new(), pad_events: Vec::new(), pad_move: None, pad_skip: None, pad_rep: None, pad_home: false, pad_y: false, pad_y_combo: false, pad_held: Vec::new(), pad_note: (String::new(), 0.0), pad_aim: false, ap: autopilot::Autopilot::default(), ap_off_t: -100.0, ap_script: args.ap_script.clone(), cam_home: (cy.to_radians(), cp), rng: crash::Rng(secs.to_bits() | 1),
             audio: if args.record.is_some() { Some(audio::Audio::offline()) } else if args.mute { None } else { audio::Audio::new() },
@@ -4610,7 +4626,7 @@ impl Game {
     /// Particles live in a frame anchored near the action; move it if the action has moved on.
     /// Advances the birds (birds.rs) around the camera; returns their strikes.
     fn step_birds(&mut self, dt: f64) -> Vec<birds::Strike> {
-        let level = self.birds_level.unwrap_or(self.gfx.birds);
+        let level = self.birds_level.unwrap_or(self.gfx_eff.birds);
         let sun = self.sun_dir();
         let (utc, doy, rain, conv) = (self.utc, self.doy, self.wx.rain as f64, self.wx.convection());
         let world = &self.world;
@@ -5318,6 +5334,12 @@ impl Game {
         self.pump_mcp();
         if self.record.is_none() {
             self.fps += (1.0 / raw_dt.max(1e-4) - self.fps) * 0.05;
+        }
+        // dynamic quality: judged on flying frames only (not menus, pauses or recordings)
+        if self.gfx.dynamic && self.mode == Mode::Fly && !self.paused && self.record.is_none() && (self.bench.is_none() || self.dyn_cli) {
+            let hz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map(|m| m as f32 / 1000.0);
+            let target = dynamic::target_ms(&self.gfx, if self.gfx.vsync || self.gfx.dyn_fps == 0 { hz } else { None });
+            self.dynq.update(raw_dt as f32, self.r.frame_gpu_ms(), target, self.gfx.vsync);
         }
 
         // Results of background lookups.
@@ -6181,7 +6203,7 @@ impl Game {
         }
         // Shadow cascades: three nested boxes around the aircraft, each snapped
         // to its own texel grid so shadows do not shimmer as it moves.
-        let shadow_on = mu > 0.04 && !in_menu && self.gfx.shadows != graphics::Level::Off;
+        let shadow_on = mu > 0.04 && !in_menu && self.gfx_eff.shadows != graphics::Level::Off;
         let sres = self.r.shadow_res() as f32;
         // (the aircraft's layer may use only part of it: Renderer::plane_shadow_res)
         let pres = self.r.plane_shadow_res() as f32;
@@ -6224,7 +6246,7 @@ impl Game {
             vol_o: [0.0; 4],
             vol_u: [0.0; 4],
             // screen space reflections on water and glass, off on low.
-            misc: [near, self.city_glow, if self.gfx.ssr() { 1.0 } else { 0.0 }, 2.0 * (fov * 0.5).tan() / rh],
+            misc: [near, self.city_glow, if self.gfx_eff.ssr() { 1.0 } else { 0.0 }, 2.0 * (fov * 0.5).tan() / rh],
             csm: [CASC[0] * 2.0 / sres, CASC[1] * 2.0 / sres, CASC[2] * 2.0 / sres, if shadow_on { 1.0 } else { 0.0 }],
             scorch: [[0.0; 4]; 8],
             crater: [[0.0; 4]; 8],
@@ -6263,7 +6285,7 @@ impl Game {
             rain: [[0.0; 4]; 2],
             quality: [0.0; 4],
             // (w: storm tier, negated for aircraft-picker stills, `still_mode`)
-            detail: [self.gfx.city_k(), self.gfx.tree_imp_k(), self.gfx.tree_far(), if still_mode() { -self.gfx.storm_tier() } else { self.gfx.storm_tier() }],
+            detail: [self.gfx_eff.city_k(), self.gfx_eff.tree_imp_k(), self.gfx_eff.tree_far(), if still_mode() { -self.gfx_eff.storm_tier() } else { self.gfx_eff.storm_tier() }],
             nimbo: if in_menu { [[0.0; 4]; 4] } else { self.wx.deck_globals() },
             glow_c: glow[0],
             glow_e: glow[1],
@@ -6283,7 +6305,7 @@ impl Game {
             snow_tr_n: snow_tr[2],
             storm_bounds: [[0.0; 4]; weather::MAX_STORMS],
             storm_turrets: [[0.0; 4]; 8 * weather::MAX_STORMS],
-            lite: [self.gfx.water_detail(), if self.gfx.clouds_on() { 1.0 } else { 0.0 }, 0.0, 0.0],
+            lite: [self.gfx_eff.water_detail(), if self.gfx_eff.clouds_on() { 1.0 } else { 0.0 }, 0.0, 0.0],
             det_mean: [[1.0 / 0.35, 1.0 / 0.35, 1.0 / 0.35, 1.0]; 16],
             det_hmean: [[0.5; 4]; 4],
         };
@@ -6291,8 +6313,9 @@ impl Game {
             let cells = self.wx.storm_cells(cam);
             let storm_w = DVec3::new(g.storm[0] as f64, g.storm[1] as f64, g.storm[2] as f64);
             let storm_base = self.wx.base();
-            let render_n = cells.len().min(self.gfx.storm_max_cells());
+            let render_n = cells.len().min(self.gfx_eff.storm_max_cells());
             g.storm[3] = render_n as f32;
+            self.storms_seen = render_n > 0 && self.gfx_eff.clouds_on();
             for (i, c) in cells.iter().take(render_n).enumerate() {
                 g.storm_cells[2 * i] = c[0];
                 g.storm_cells[2 * i + 1] = c[1];
@@ -7241,7 +7264,8 @@ impl Game {
 
     /// Hands changed graphics settings to the renderer and the world.
     fn apply_graphics(&mut self) {
-        let g = self.gfx;
+        let g = self.dynq.settings(&self.gfx, self.storms_seen);
+        self.gfx_eff = g;
         if self.gfx_applied == Some(g) {
             return;
         }
@@ -7263,7 +7287,9 @@ impl Game {
         self.world.tree_far = g.tree_far();
         self.world.tree_imp_k = g.tree_imp_k();
         self.world.cars = g.car_density();
-        if self.gfx_applied.is_some() {
+        if self.gfx_applied.is_some() && g.dynamic && self.gfx_applied.is_some_and(|a| a.dynamic) {
+            log::info!("dynamic quality: step {}/{} ({:.1} ms), {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, city {}, trees {}, AO {}, water {}", self.dynq.down, self.dynq.depth(), self.dynq.ema, g.render_scale() * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.city.name(), g.trees.name(), g.ao, g.water.name());
+        } else if self.gfx_applied.is_some() {
             log::info!("graphics: {} at {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, scenery {}, city {}, trees {}, traffic {}, AO {}, water {}, MSAA {}x", g.matches().map(graphics::Preset::name).unwrap_or("custom"), g.scale * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.scenery.name(), g.city.name(), g.trees.name(), g.cars.name(), g.ao, g.water.name(), g.msaa);
         }
         self.gfx_applied = Some(g);
