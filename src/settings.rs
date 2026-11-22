@@ -17,6 +17,10 @@ pub struct Settings {
     pub cam_mode: u8,
     pub cockpit_fov: f32,
     pub look_sens: f64,
+    /// looking around (mouse and gamepad) turns the other way in the cockpit…
+    pub invert_look_cockpit: bool,
+    /// …and in the outside views (chase, rear).
+    pub invert_look_outside: bool,
     pub show_hud: bool,
     /// the hud in the cockpit view too.
     pub hud_cockpit: bool,
@@ -80,7 +84,7 @@ impl LastStart {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: None, sound_on: true, volume: 1.0, cam_mode: 0, cockpit_fov: crate::cockpit::FOV, look_sens: 1.0, show_hud: true, hud_cockpit: false, path_marker: false, minimap: true, landing_guidance: true, arcade: false, minimap_plan: false, minimap_heading_up: false, minimap_zoom: 12, minimap_size: 280.0, minimap_height: 280.0, taa: true, live_traffic: true, live_weather: true, real_time: true, snow: crate::snow::Mode::Auto, last: None, multiplayer: false, mp_server: "auto".into(), mp_name: String::new() }
+        Self { lang: None, sound_on: true, volume: 1.0, cam_mode: 0, cockpit_fov: crate::cockpit::FOV, look_sens: 1.0, invert_look_cockpit: false, invert_look_outside: false, show_hud: true, hud_cockpit: false, path_marker: false, minimap: true, landing_guidance: true, arcade: false, minimap_plan: false, minimap_heading_up: false, minimap_zoom: 12, minimap_size: 280.0, minimap_height: 280.0, taa: true, live_traffic: true, live_weather: true, real_time: true, snow: crate::snow::Mode::Auto, last: None, multiplayer: false, mp_server: "auto".into(), mp_name: String::new() }
     }
 }
 
@@ -108,6 +112,8 @@ impl Settings {
             cam_mode: match j["camera"].as_str() { Some("cockpit") => 1, Some("tail") => TAIL_VIEW, _ => 0 },
             cockpit_fov: f("cockpit_fov", d.cockpit_fov as f64).clamp(35.0, 85.0) as f32,
             look_sens: f("mouse_look_speed", d.look_sens).clamp(0.25, 3.0),
+            invert_look_cockpit: b("invert_look_cockpit", d.invert_look_cockpit),
+            invert_look_outside: b("invert_look_outside", d.invert_look_outside),
             show_hud: b("hud", d.show_hud),
             hud_cockpit: b("hud_cockpit", d.hud_cockpit),
             path_marker: b("path_marker", d.path_marker),
@@ -139,6 +145,8 @@ impl Settings {
             "camera": match self.cam_mode { 1 => "cockpit", TAIL_VIEW => "tail", _ => "chase" },
             "cockpit_fov": self.cockpit_fov,
             "mouse_look_speed": self.look_sens,
+            "invert_look_cockpit": self.invert_look_cockpit,
+            "invert_look_outside": self.invert_look_outside,
             "hud": self.show_hud,
             "hud_cockpit": self.hud_cockpit,
             "path_marker": self.path_marker,
@@ -182,7 +190,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let s = Settings { lang: Lang::parse("fr"), sound_on: false, volume: 0.4, cam_mode: 1, cockpit_fov: 50.0, look_sens: 1.5, show_hud: false, hud_cockpit: true, path_marker: true, minimap: false, landing_guidance: false, arcade: true, minimap_plan: true, minimap_heading_up: true, minimap_zoom: 15, minimap_size: 420.0, minimap_height: 300.0, taa: false, live_traffic: false, live_weather: false, real_time: false, snow: crate::snow::Mode::Always, last: Some(LastStart { lat: 37.6, lon: -122.4, name: "KSFO".into(), airport: Some("KSFO".into()), start: "approach".into(), runway: Some("28L".into()), aircraft: "c172".into() }), multiplayer: true, mp_server: "example.org:7000".into(), mp_name: "Dany".into() };
+        let s = Settings { lang: Lang::parse("fr"), sound_on: false, volume: 0.4, cam_mode: 1, cockpit_fov: 50.0, look_sens: 1.5, invert_look_cockpit: true, invert_look_outside: true, show_hud: false, hud_cockpit: true, path_marker: true, minimap: false, landing_guidance: false, arcade: true, minimap_plan: true, minimap_heading_up: true, minimap_zoom: 15, minimap_size: 420.0, minimap_height: 300.0, taa: false, live_traffic: false, live_weather: false, real_time: false, snow: crate::snow::Mode::Always, last: Some(LastStart { lat: 37.6, lon: -122.4, name: "KSFO".into(), airport: Some("KSFO".into()), start: "approach".into(), runway: Some("28L".into()), aircraft: "c172".into() }), multiplayer: true, mp_server: "example.org:7000".into(), mp_name: "Dany".into() };
         assert_eq!(Settings::from_json(&s.to_json()), s);
         let tail = Settings { cam_mode: TAIL_VIEW, ..Settings::default() };
         assert_eq!(Settings::from_json(&tail.to_json()), tail);

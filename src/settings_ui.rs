@@ -448,6 +448,12 @@ impl Game {
             row(ui, t!("settings.cockpit_field_of_view"), t!("settings.the_mouse_wheel_zooms_for"), |ui| {
                 ui.add(egui::Slider::new(&mut self.cockpit_fov, 35.0..=85.0).custom_formatter(|v, _| format!("{v:.0}° vertical")));
             });
+            row(ui, t!("settings.invert_cockpit_view"), t!("settings.invert_view_hint"), |ui| {
+                menu::switch(ui, &mut self.invert_look_cockpit);
+            });
+            row(ui, t!("settings.invert_outside_view"), t!("settings.invert_view_hint"), |ui| {
+                menu::switch(ui, &mut self.invert_look_outside);
+            });
         });
     }
 
