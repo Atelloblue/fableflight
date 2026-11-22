@@ -140,6 +140,20 @@ const SUN_E: f32 = 10.0;
 /// Exposure of the start screen's globe seen from orbit (a day-lit planet in
 /// black space; flight's daytime exposure is 0.5).
 const GLOBE_EXPOSURE: f32 = 0.5;
+/// Flight's exposure at night, away from city lights (by day it is 0.5).
+const NIGHT_EXPOSURE: f32 = 5.0;
+/// How many stops the night exposure closes down over the brightest downtown
+/// (`city_light` 1); a suburb's thinner lights take it down about a third as far.
+const CITY_STOPS: f32 = 1.4;
+
+/// How lit the ground around (lat, lon) (degrees) is at night, 0..1 (1: the
+/// brightest downtown, NASA Black Marble): the mean over a square that
+/// widens with the height `agl` (m), as the view takes in more ground.
+fn city_light(lat: f64, lon: f64, agl: f64) -> f32 {
+    let cell = (900.0 + agl * 0.6).min(6000.0);
+    let g = sources::NightLights::get().grid(lat, lon, 5, cell);
+    (g.iter().sum::<f32>() / g.len() as f32 / sources::NL_PEAK).clamp(0.0, 1.0)
+}
 /// The aircraft's own shadow map: half width (m), how far back toward the sun
 /// it starts, and how deep it reaches.
 const PSHADOW_R: f32 = 6.2;
@@ -1317,6 +1331,10 @@ struct Game {
     fresh_line: f32,
     /// how far the eye has opened up to the gloom under a storm, 0..1
     storm_adapt: f32,
+    /// how far the eye has closed down to the city lights around at night, 0..1
+    city_adapt: f32,
+    /// where the night lights around were last measured, and how bright they were
+    city_probe: Option<(DVec3, f32)>,
     head_live: bool,
     /// the cockpit warnings sounding, and when each latched one last tripped
     /// (pull up, too low, sink rate, gear) so they do not flicker
@@ -1364,8 +1382,6 @@ struct Game {
     name_rx: Option<std::sync::mpsc::Receiver<String>>,
     last_click: f64,
     n_cars: usize,
-    /// how much city is around (0..1), for the orange skyglow at night
-    city_glow: f32,
     skyglow: skyglow::SkyGlow,
     /// today's real snow cover around the camera (snowmap.rs)
     snowmap: snowmap::SnowMap,
@@ -1747,7 +1763,7 @@ impl Game {
             g_slow: 1.0, last_bump: 0.0, was_ground: false, prev_vs: 0.0, prev_gear: plane.gear, prev_flaps: plane.flaps, quit: false,
             mode: if args.menu.unwrap_or(true) { Mode::Menu } else { Mode::Fly }, menu, menu_go: args.menu_go, heading: args.heading.to_radians(), destr: destruct::Destruction::new(secs.to_bits()),
             sheds: damage::Sheds::default(), fx_anchor: plane.pos, fx_shift: DVec3::ZERO, smoke_acc: 0.0, flash: Vec::new(), airport_note: (String::new(), -100.0), weapon_flash: None, kills: Vec::new(), damage_spec: args.damage.clone(), wreck_dirty: false, wreck_t: 0.0, wreck_seen: 0.0,
-            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, city_glow: 0.0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, plane, weapons,
+            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, city_adapt: 0.0, city_probe: None, plane, weapons,
             airport_rx: None, hold_spot: None, bench: args.bench.map(Bench::new),
             prefs_lang: args.lang.or(prefs.lang),
             prefs_t: 0.0,
@@ -6164,9 +6180,6 @@ impl Game {
         self.world.ocean.update(dt, self.time, self.wx.wind, self.wx.wind_from, sinlat, cam, east, north, self.ocean_off);
         let sun = self.sun_dir();
         let (moon, moon_lit) = self.moon_dir();
-        // Detail building tiles in range stand in for "how much city is around".
-        let city = if in_menu { 0.0 } else { (self.world.stats.2 as f32 / 45.0).min(1.0) };
-        self.city_glow += (city - self.city_glow) * (dt_real as f32 * 0.5).min(1.0);
         // City light in the air: the lights come on as the sun sets.
         let glow_px = if in_menu { None } else { self.skyglow.update(cam) };
         // Today's real snow cover, when the snow follows the real world.
@@ -6193,7 +6206,22 @@ impl Game {
         // The start screen's globe from orbit is exposed for its day side
         // (common.wgsl `globe_k`), wherever the night falls on it.
         let globe = if in_menu { let k = ((calt as f32 - 150e3) / 650e3).clamp(0.0, 1.0); k * k * (3.0 - 2.0 * k) } else { 0.0 };
-        let exposure = (6.0f32.ln() + (GLOBE_EXPOSURE.ln() - 6.0f32.ln()) * globe + (0.5f32.ln() - 6.0f32.ln()) * day * (1.0 - globe)).exp() * if self.cam_mode == 1 && !self.crashed && !in_menu { 2f32.powf(self.head.adapt) } else { 1.0 } * 2f32.powf(1.3 * self.storm_adapt);
+        // Over a city at night the eye (or a camera) sets itself by the lights,
+        // not the moonlit dark: the walls, the haze and the sky above drop
+        // away while the windows and streets stay bright (the facades give
+        // their lights back most of it, facade.wgsl). Over open country it
+        // stays opened up to the moon and stars.
+        if in_menu {
+            self.city_probe = None;
+        } else if self.city_probe.is_none_or(|(p, _)| p.distance(cam) > 400.0) {
+            let (la, lo, alt) = geo::pos_to_lla(cam);
+            let gh = self.world.ground(la, lo).map(|g| g.h).unwrap_or(0.0);
+            self.city_probe = Some((cam, city_light(la.to_degrees(), lo.to_degrees(), (alt - gh).max(0.0))));
+        }
+        let lit = self.city_probe.map_or(0.0, |(_, v)| v);
+        let city_target = if in_menu { 0.0 } else { lit.sqrt() * (1.0 - day) };
+        self.city_adapt += (city_target - self.city_adapt) * (dt_real as f32 * 0.3).min(1.0);
+        let exposure = (NIGHT_EXPOSURE.ln() + (GLOBE_EXPOSURE.ln() - NIGHT_EXPOSURE.ln()) * globe + (0.5f32.ln() - NIGHT_EXPOSURE.ln()) * day * (1.0 - globe)).exp() * if self.cam_mode == 1 && !self.crashed && !in_menu { 2f32.powf(self.head.adapt) } else { 1.0 } * 2f32.powf(1.3 * self.storm_adapt - CITY_STOPS * self.city_adapt);
         let v4 = |v: DVec3, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
         let cam_right = dir.cross(upv).normalize();
         let cam_up = cam_right.cross(dir);
@@ -6248,7 +6276,7 @@ impl Game {
             vol_o: [0.0; 4],
             vol_u: [0.0; 4],
             // screen space reflections on water and glass, off on low.
-            misc: [near, self.city_glow, if self.gfx_eff.ssr() { 1.0 } else { 0.0 }, 2.0 * (fov * 0.5).tan() / rh],
+            misc: [near, CITY_STOPS * self.city_adapt, if self.gfx_eff.ssr() { 1.0 } else { 0.0 }, 2.0 * (fov * 0.5).tan() / rh],
             csm: [CASC[0] * 2.0 / sres, CASC[1] * 2.0 / sres, CASC[2] * 2.0 / sres, if shadow_on { 1.0 } else { 0.0 }],
             scorch: [[0.0; 4]; 8],
             crater: [[0.0; 4]; 8],
