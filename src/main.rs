@@ -5339,7 +5339,9 @@ impl Game {
         if self.gfx.dynamic && self.mode == Mode::Fly && !self.paused && self.record.is_none() && (self.bench.is_none() || self.dyn_cli) {
             let hz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map(|m| m as f32 / 1000.0);
             let target = dynamic::target_ms(&self.gfx, if self.gfx.vsync || self.gfx.dyn_fps == 0 { hz } else { None });
-            self.dynq.update(raw_dt as f32, self.r.frame_gpu_ms(), target, self.gfx.vsync);
+            // (vsync or a frame limit at the target holds frames back, hiding any room)
+            let paced = self.gfx.vsync || (self.gfx.fps_cap > 0 && (1000.0 / self.gfx.fps_cap as f32 - target).abs() < 0.01);
+            self.dynq.update(raw_dt as f32, self.r.frame_gpu_ms(), target, paced);
         }
 
         // Results of background lookups.
@@ -7266,6 +7268,9 @@ impl Game {
     fn apply_graphics(&mut self) {
         let g = self.dynq.settings(&self.gfx, self.storms_seen);
         self.gfx_eff = g;
+        // (from the player's setting, not the lowered one: dynamic terrain
+        // detail must not drop loaded tiles that would then be fetched again)
+        self.world.tile_cap = self.gfx.tile_cap();
         if self.gfx_applied == Some(g) {
             return;
         }
@@ -7281,13 +7286,12 @@ impl Game {
         self.world.lod_k = g.lod_k();
         self.world.reach_k = g.reach();
         self.world.city_k = g.city_k();
-        self.world.tile_cap = g.tile_cap();
         self.world.spare_builds = g.spare_builds();
         self.world.max_build_jobs = g.max_build_jobs();
         self.world.tree_far = g.tree_far();
         self.world.tree_imp_k = g.tree_imp_k();
         self.world.cars = g.car_density();
-        if self.gfx_applied.is_some() && g.dynamic && self.gfx_applied.is_some_and(|a| a.dynamic) {
+        if g.dynamic && self.gfx_applied.is_some_and(|a| a.dynamic) {
             log::info!("dynamic quality: step {}/{} ({:.1} ms), {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, city {}, trees {}, AO {}, water {}", self.dynq.down, self.dynq.depth(), self.dynq.ema, g.render_scale() * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.city.name(), g.trees.name(), g.ao, g.water.name());
         } else if self.gfx_applied.is_some() {
             log::info!("graphics: {} at {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, scenery {}, city {}, trees {}, traffic {}, AO {}, water {}, MSAA {}x", g.matches().map(graphics::Preset::name).unwrap_or("custom"), g.scale * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.scenery.name(), g.city.name(), g.trees.name(), g.cars.name(), g.ao, g.water.name(), g.msaa);

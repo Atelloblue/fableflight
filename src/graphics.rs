@@ -205,7 +205,8 @@ impl Graphics {
         });
         if INTEGRATED.load(std::sync::atomic::Ordering::Relaxed) && matches!(self.matches(), Some(Preset::Medium | Preset::High | Preset::Ultra) | None) {
             note(ui, t!("graphics.integrated_note"));
-        }        row(ui, t!("graphics.dynamic"), t!("graphics.dynamic_hint"), |ui| {
+        }
+        row(ui, t!("graphics.dynamic"), t!("graphics.dynamic_hint"), |ui| {
             menu::switch(ui, &mut self.dynamic);
         });
         if self.dynamic {

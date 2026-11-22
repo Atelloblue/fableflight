@@ -70,13 +70,17 @@ const LADDER: [Knob; 23] = [
     Knob::Shadows,
 ];
 
+/// One level lower, never below `floor`, and never up: a setting already at
+/// or under its floor (Off included) stays where it is.
 fn down(l: Level, floor: Level) -> Level {
-    let n = match l {
+    if rank(l) <= rank(floor) {
+        return l;
+    }
+    match l {
         Level::Ultra => Level::High,
         Level::High => Level::Medium,
-        Level::Medium | Level::Low | Level::Off => Level::Low,
-    };
-    if rank(n) < rank(floor) { l } else { n }
+        _ => Level::Low,
+    }
 }
 
 fn rank(l: Level) -> u8 {
@@ -95,12 +99,12 @@ fn step(g: &Graphics, ceiling: &Graphics, k: Knob) -> Option<Graphics> {
     match k {
         Knob::Storms => n.storms = down(g.storms, Level::Low),
         Knob::CloudShadows => n.cloud_shadows = false,
-        // (Off would take the clouds away, not make them cheaper)
-        Knob::Clouds => n.clouds = if g.clouds == Level::Off { Level::Off } else { down(g.clouds, Level::Low) },
+        // (never Off: that would take the clouds away, not make them cheaper)
+        Knob::Clouds => n.clouds = down(g.clouds, Level::Low),
         Knob::Trees => n.trees = down(g.trees, Level::Low),
         Knob::City => n.city = down(g.city, Level::Low),
         // (never Off: the scene goes flat without them)
-        Knob::Shadows => n.shadows = if g.shadows == Level::Off { Level::Off } else { down(g.shadows, Level::Low) },
+        Knob::Shadows => n.shadows = down(g.shadows, Level::Low),
         Knob::Terrain => n.terrain = down(g.terrain, Level::Low),
         Knob::Water => n.water = down(g.water, Level::Medium),
         Knob::Ao => n.ao = false,
@@ -145,13 +149,16 @@ pub struct Dynamic {
     /// time without a failed step up (s)
     calm: f32,
     storms: bool,
+    /// seconds the storms count as on screen after they were last seen, so
+    /// one at the edge of range does not swap the ladder every frame
+    storm_hold: f32,
     steps: Vec<Graphics>,
     ceiling: Option<Graphics>,
 }
 
 impl Default for Dynamic {
     fn default() -> Self {
-        Self { down: 0, ema: 0.0, over: 0.0, under: 0.0, cool: 0.0, up_wait: UP_WAIT, since_up: f32::INFINITY, calm: 0.0, storms: false, steps: Vec::new(), ceiling: None }
+        Self { down: 0, ema: 0.0, over: 0.0, under: 0.0, cool: 0.0, up_wait: UP_WAIT, since_up: f32::INFINITY, calm: 0.0, storms: false, storm_hold: 0.0, steps: Vec::new(), ceiling: None }
     }
 }
 
@@ -159,6 +166,8 @@ impl Default for Dynamic {
 const UP_WAIT: f32 = 3.0;
 /// Seconds of slow frames before stepping down.
 const DOWN_AFTER: f32 = 0.35;
+/// Seconds storms keep their place at the top of the ladder once out of sight.
+const STORM_HOLD: f32 = 5.0;
 
 impl Dynamic {
     /// The settings to draw with: `ceiling` (the player's) lowered as far as
@@ -168,12 +177,17 @@ impl Dynamic {
             *self = Self::default();
             return *ceiling;
         }
+        if storms {
+            self.storm_hold = STORM_HOLD;
+        }
+        let storms = self.storm_hold > 0.0;
         if self.ceiling != Some(*ceiling) || self.storms != storms || self.steps.is_empty() {
             let steps = ladder(ceiling, storms);
             // (storms coming or going add or remove the storm steps at the
-            // top: keep the rest of the ladder where it was)
-            if self.storms != storms && !self.steps.is_empty() {
-                let extra = steps.len().abs_diff(self.steps.len());
+            // top: keep the rest of the ladder where it was. At the ceiling it
+            // stays at the ceiling: with room to spare a storm keeps its detail.)
+            if self.storms != storms && !self.steps.is_empty() && self.down > 0 {
+                let extra = steps.len().abs_diff(ladder(ceiling, !storms).len());
                 self.down = if storms { self.down + extra } else { self.down.saturating_sub(extra) };
             }
             self.steps = steps;
@@ -185,9 +199,9 @@ impl Dynamic {
     }
 
     /// One frame: `dt` its length (s), `gpu_ms` its GPU time where known,
-    /// `target_ms` the frame time to hold, `vsync` whether the display paces
+    /// `target_ms` the frame time to hold, `paced` whether vsync or a frame limit paces
     /// frames (so the frame time shows no headroom).
-    pub fn update(&mut self, dt: f32, gpu_ms: Option<f32>, target_ms: f32, vsync: bool) {
+    pub fn update(&mut self, dt: f32, gpu_ms: Option<f32>, target_ms: f32, paced: bool) {
         // (a hitch: loading, a menu, a window drag)
         if !(0.0..0.25).contains(&dt) || self.steps.is_empty() {
             return;
@@ -197,6 +211,7 @@ impl Dynamic {
             None => (dt * 1000.0, false),
         };
         self.ema = if self.ema <= 0.0 { cost } else { self.ema + (cost - self.ema) * (1.0 - (-dt / 0.15).exp()) };
+        self.storm_hold -= dt;
         self.since_up += dt;
         self.calm += dt;
         if self.calm > 45.0 {
@@ -216,8 +231,8 @@ impl Dynamic {
         } else {
             self.over = 0.0;
             // room to step up: clear headroom where it is measured; with only the
-            // frame time and vsync, frames on time are as good as it shows
-            let room = if measured { self.ema < target_ms * 0.72 } else { vsync || self.ema < target_ms * 0.8 };
+            // frame time and frames paced, frames on time are as good as it shows
+            let room = if measured { self.ema < target_ms * 0.72 } else { paced || self.ema < target_ms * 0.8 };
             self.under = if room { self.under + dt } else { 0.0 };
         }
         if self.over > DOWN_AFTER && self.down + 1 < self.steps.len() {
@@ -244,9 +259,16 @@ impl Dynamic {
 }
 
 /// The frame time to hold (ms): the setting, or the display's rate (60 Hz
-/// where it is unknown), never past the frame limit.
+/// where it is unknown), never past the frame limit. `refresh_hz` is given
+/// where the display's rate applies: with vsync (nothing faster is shown, so
+/// a higher setting is held to it), or with the setting at "display".
 pub fn target_ms(g: &Graphics, refresh_hz: Option<f32>) -> f32 {
-    let mut fps = if g.dyn_fps > 0 { g.dyn_fps as f32 } else { refresh_hz.filter(|h| *h >= 30.0).unwrap_or(60.0) };
+    let hz = refresh_hz.filter(|h| *h >= 30.0);
+    let mut fps = match (g.dyn_fps, hz) {
+        (0, h) => h.unwrap_or(60.0),
+        (f, Some(h)) => (f as f32).min(h),
+        (f, None) => f as f32,
+    };
     if g.fps_cap > 0 {
         fps = fps.min(g.fps_cap as f32);
     }
@@ -281,6 +303,36 @@ mod tests {
         assert_eq!(l[3].storms, Level::Low);
         assert_eq!(l[3].clouds, Level::Ultra);
         assert_eq!(ladder(&dyn_ultra(), false)[1].storms, Level::Ultra);
+    }
+
+    #[test]
+    fn storms_appearing_at_the_ceiling_keep_their_detail() {
+        let c = dyn_ultra();
+        let mut d = Dynamic::default();
+        assert_eq!(d.settings(&c, false), c);
+        assert_eq!(d.settings(&c, true), c, "room to spare: storms stay at the ceiling");
+        // already lowered: storms go first, the rest stays where it was
+        let mut d = Dynamic::default();
+        d.settings(&c, false);
+        d.down = 2;
+        let before = d.settings(&c, false);
+        let now = d.settings(&c, true);
+        assert_eq!(now.storms, Level::Low);
+        assert_eq!(Graphics { storms: before.storms, ..now }, before);
+        // and they keep that place a while after going out of sight
+        assert_eq!(d.settings(&c, false), now);
+        for _ in 0..60 * 6 {
+            d.update(1.0 / 60.0, Some(12.0), 16.6, true);
+        }
+        assert_eq!(d.settings(&c, false).storms, Level::Ultra);
+    }
+
+    #[test]
+    fn never_raises_what_is_off() {
+        let mut c = dyn_ultra();
+        c.shadows = Level::Off;
+        c.storms = Level::Off;
+        assert!(ladder(&c, true).iter().all(|g| g.shadows == Level::Off && g.storms == Level::Off));
     }
 
     #[test]
@@ -341,6 +393,11 @@ mod tests {
         assert!((target_ms(&g, None) - 1000.0 / 60.0).abs() < 1e-3);
         g.dyn_fps = 45;
         assert!((target_ms(&g, Some(144.0)) - 1000.0 / 45.0).abs() < 1e-3);
+        // vsync on a 60 Hz display: 144 cannot be shown, so 60 is held
+        g.dyn_fps = 144;
+        assert!((target_ms(&g, Some(60.0)) - 1000.0 / 60.0).abs() < 1e-3);
+        assert!((target_ms(&g, None) - 1000.0 / 144.0).abs() < 1e-3);
+        g.dyn_fps = 45;
         g.fps_cap = 30;
         assert!((target_ms(&g, Some(144.0)) - 1000.0 / 30.0).abs() < 1e-3);
     }

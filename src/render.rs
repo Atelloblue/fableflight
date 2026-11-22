@@ -3040,12 +3040,12 @@ impl Renderer {
         }
     }
 
-    /// Render resolution as a share of the window's (graphics settings).
     /// The GPU time of a recent frame (ms), where the adapter has timestamps.
     pub fn frame_gpu_ms(&self) -> Option<f32> {
         self.frame_clock.as_ref().and_then(|c| c.last)
     }
 
+    /// Render resolution as a share of the window's (graphics settings).
     pub fn set_scale(&mut self, s: f32) {
         let s = s.clamp(crate::graphics::SCALE_MIN, crate::graphics::SCALE_MAX);
         if s != self.scale {
