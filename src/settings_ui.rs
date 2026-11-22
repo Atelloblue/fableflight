@@ -459,10 +459,13 @@ impl Game {
             });
         });
         card(ui, t!("settings.connected_devices"), |ui| self.binds_devices(ui));
-        card(ui, t!("settings.gamepad"), |ui| self.binds_pad(ui));
-        card(ui, t!("settings.joystick_axes"), |ui| self.binds_axes(ui));
-        card(ui, t!("settings.buttons_joystick_throttle_wheel"), |ui| self.binds_buttons(ui));
-        card(ui, t!("settings.keyboard"), |ui| self.binds_keys(ui));
+        // One search over every bindings table below (and the key reference).
+        let words = menu::search_box(ui, "bindings", t!("menu.search_bindings"), ui.available_width().min(460.0));
+        ui.add_space(6.0);
+        card(ui, t!("settings.gamepad"), |ui| self.binds_pad(ui, &words));
+        card(ui, t!("settings.joystick_axes"), |ui| self.binds_axes(ui, &words));
+        card(ui, t!("settings.buttons_joystick_throttle_wheel"), |ui| self.binds_buttons(ui, &words));
+        card(ui, t!("settings.keyboard"), |ui| self.binds_keys(ui, &words));
         if ui.add_enabled(self.binds.capture.is_none(), egui::Button::new(t!("settings.reset_all_bindings"))).clicked() {
             self.binds = bind::Bindings::default();
             self.keys.clear();
@@ -866,7 +869,7 @@ impl Game {
 
     /// The gamepad's flying layout (padmap.rs): the sticks and triggers,
     /// then every action, each bound from the pad itself.
-    fn binds_pad(&mut self, ui: &mut Ui) {
+    fn binds_pad(&mut self, ui: &mut Ui, words: &[String]) {
         use bind::Capture;
         use padmap::{AxisSrc, PadAxis};
         let busy = self.binds.capture.is_some();
@@ -881,6 +884,9 @@ impl Game {
         bind_grid(ui, "pad_binds", |ui| {
             for a in PadAxis::ALL {
                 let src = self.binds.pad.axis(a);
+                if !menu::matches(words, &[a.label(), &src.map(|s| s.stick.spec()).unwrap_or_default()]) {
+                    continue;
+                }
                 grid_label(ui, a.label(), cw);
                 pad_cell(ui, src.map(|s| s.stick.spec()), self.binds.pad.axis_moved(a));
                 ui.horizontal(|ui| {
@@ -904,12 +910,15 @@ impl Game {
             }
             // (one grid for both, so the columns line up)
             for _ in 0..3 {
-                ui.add_space(4.0);
+                ui.allocate_space(vec2(0.0, 4.0));
             }
             ui.end_row();
             for &(id, _) in padmap::actions() {
                 let moved = self.binds.pad.is_moved(id);
                 let chord = self.binds.pad.chord(id);
+                if !menu::matches(words, &[padmap::label(id), id, &chord.map(|c| c.spec()).unwrap_or_default()]) {
+                    continue;
+                }
                 grid_label(ui, padmap::label(id), cw);
                 pad_cell(ui, chord.map(|c| if c == padmap::Y_ALONE { t!("settings.y_let_go").to_string() } else { c.spec() }), moved);
                 ui.horizontal(|ui| {
@@ -936,14 +945,15 @@ impl Game {
         }
     }
 
-    fn binds_axes(&mut self, ui: &mut Ui) {
+    fn binds_axes(&mut self, ui: &mut Ui, words: &[String]) {
         use bind::{AxisAct, Capture};
         let busy = self.binds.capture.is_some();
         note(ui, t!("settings.binding_then_its_live_value"));
         ui.add_space(6.0);
         let cw = ui.available_width();
         bind_grid(ui, "bind_axes", |ui| {
-            for a in AxisAct::ALL {
+            let shown: Vec<_> = AxisAct::ALL.into_iter().filter(|a| menu::matches(words, &[a.label(), &self.binds.describe_axis(*a).unwrap_or_default()])).collect();
+            for a in shown {
                 grid_label(ui, a.label(), cw);
                 binding_cell(ui, self.binds.describe_axis(a), false);
                 ui.horizontal(|ui| {
@@ -977,12 +987,13 @@ impl Game {
         });
     }
 
-    fn binds_buttons(&mut self, ui: &mut Ui) {
+    fn binds_buttons(&mut self, ui: &mut Ui, words: &[String]) {
         use bind::{Capture, ACTIONS};
         let busy = self.binds.capture.is_some();
         let cw = ui.available_width();
         bind_grid(ui, "bind_buttons", |ui| {
-            for a in ACTIONS {
+            let shown: Vec<_> = ACTIONS.iter().filter(|a| menu::matches(words, &[a.label(), a.id, &self.binds.describe_button(a.id).unwrap_or_default()])).collect();
+            for a in shown {
                 grid_label(ui, a.label(), cw);
                 binding_cell(ui, self.binds.describe_button(a.id), false);
                 ui.horizontal(|ui| {
@@ -999,19 +1010,22 @@ impl Game {
         });
     }
 
-    fn binds_keys(&mut self, ui: &mut Ui) {
+    fn binds_keys(&mut self, ui: &mut Ui, words: &[String]) {
         use bind::{Capture, ACTIONS};
         let busy = self.binds.capture.is_some();
         let cw = ui.available_width();
         bind_grid(ui, "bind_keys", |ui| {
             for a in ACTIONS.iter().filter(|a| a.keyboard) {
-                grid_label(ui, a.label(), cw);
                 let moved = self.binds.keys.contains_key(a.id);
                 let keys = if a.id == "tail_view" && !moved && self.binds.map_key(winit::keyboard::KeyCode::IntlBackslash) == Some(a.key) {
                     Some(i18n::tr("text.controls.f6_iso_key").to_string())
                 } else {
                     self.binds.key_of(a).map(bind::key_name)
                 };
+                if !menu::matches(words, &[a.label(), a.id, keys.as_deref().unwrap_or_default()]) {
+                    continue;
+                }
+                grid_label(ui, a.label(), cw);
                 binding_cell(ui, keys, moved);
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!busy, egui::Button::new(t!("settings.change"))).clicked() {
