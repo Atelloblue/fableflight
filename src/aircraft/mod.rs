@@ -7,6 +7,9 @@
 //!
 //! Body frame (as in airframe.rs): +X right, +Y up, -Z forward, the origin at
 //! the centre of gravity.
+// Aircraft geometry tables contain physical dimensions in metres (e.g. 1.57 m,
+// 3.14 m, -6.28 m) that trip clippy::approx_constant.
+#![allow(clippy::approx_constant)]
 pub mod b747;
 pub mod c172;
 pub mod concorde;
@@ -17,6 +20,8 @@ pub mod fa18;
 pub mod g650;
 pub mod sr71;
 pub mod starship;
+#[cfg(test)]
+mod standards;
 
 use crate::airframe::{Model, Sect};
 use glam::{DVec3, Vec3};
@@ -381,16 +386,20 @@ pub struct Hole {
 /// speeds they are good for, the two flap roles.)
 #[derive(Clone)]
 pub struct Lever {
-    /// what it is called, and each notch (English, French)
-    pub name: [&'static str; 2],
-    pub notches: &'static [[&'static str; 2]],
+    /// the keys (in the language files) of what it is called and of each notch
+    pub name: &'static str,
+    pub notches: &'static [&'static str],
     /// the pieces with the left and the right flap role, as the damage messages name them
     pub parts: [&'static str; 2],
 }
 
 impl Lever {
     pub fn notch(&self, k: u8) -> &'static str {
-        self.notches.get(k as usize).map_or("", |n| n[crate::i18n::is_fr() as usize])
+        self.notches.get(k as usize).map_or("", |n| crate::i18n::tr(n))
+    }
+
+    pub fn label(&self) -> &'static str {
+        crate::i18n::tr(self.name)
     }
 }
 
@@ -426,6 +435,68 @@ pub struct MissileStation {
     pub piece: &'static str,
     pub side: usize,
     pub name: &'static str,
+}
+
+/// A paint scheme the aircraft picker offers for a type (`liveries`). The
+/// shader takes it as `Paint::a` .. `Paint::d` and `Paint::title` (plane.wgsl);
+/// what the colours and the style mean is up to each type's livery function.
+pub struct Livery {
+    pub name: &'static str,
+    /// four colours, linear RGB; `colours[0][3]` is the style (which design
+    /// the type's livery function draws); `colours[1][3]` is overwritten
+    /// (`livery_uniform`); the other w's are free
+    pub colours: [[f32; 4]; 4],
+    /// an airline's name painted on, if the design has one: capitals, digits
+    /// and spaces, at most 15 (glyphs of plane.wgsl's stroke font)
+    pub title: &'static str,
+    /// a paint of its own instead of the type's `Spec::paint`
+    pub paint: Option<&'static Paint>,
+    /// the picker's swatch: its main colour over its trim, linear RGB
+    pub swatch: [[f32; 3]; 2],
+    /// its picture in the aircraft picker (680 x 392), rendered with `--still`
+    /// (assets/aircraft/liveries/stills.sh)
+    pub still: &'static [u8],
+}
+
+/// The paint schemes the picker offers for a type: those painted by the
+/// shader, or baked by script; none for a type that has only its own.
+pub fn liveries(spec: &Spec) -> &'static [Livery] {
+    if std::ptr::eq(spec, &c172::SPEC) { c172::LIVERIES }
+    else if std::ptr::eq(spec, &dr400::SPEC) { dr400::LIVERIES }
+    else if std::ptr::eq(spec, &b747::SPEC) { b747::LIVERIES }
+    else if std::ptr::eq(spec, &g650::SPEC) { g650::LIVERIES }
+    else { &[] }
+}
+
+/// The scheme a type starts in (an index of `liveries`).
+pub fn default_livery(spec: &Spec) -> usize {
+    if std::ptr::eq(spec, &c172::SPEC) { c172::DEFAULT_LIVERY } else { 0 }
+}
+
+/// A scheme as the shader's uniform takes it (`Paint::a` .. `Paint::title`):
+/// the four colours, then the title, 8 bits a glyph with its length in the
+/// top byte. `b.w` is the flown type's kind (`Spec::id`) + 1: the uniform is
+/// shared by every aircraft drawn, so other types (multiplayer, wreckage)
+/// keep their own default look (plane.wgsl `livery_ours`). No scheme: all
+/// zero but that (each livery function's style 0).
+pub fn livery_uniform(spec: &Spec, l: Option<&Livery>) -> [u32; 20] {
+    let mut u = [0u32; 20];
+    if let Some(l) = l {
+        for (k, c) in l.colours.iter().flatten().enumerate() {
+            u[k] = c.to_bits();
+        }
+    }
+    u[7] = (spec.id as f32 + 1.0).to_bits();
+    let Some(l) = l else { return u };
+    let n = l.title.chars().count().min(15);
+    for (k, c) in l.title.chars().take(15).enumerate() {
+        u[16 + k / 4] |= b747::deck::glyph(c) << (8 * (k % 4));
+    }
+    for k in n..15 {
+        u[16 + k / 4] |= 15 << (8 * (k % 4));
+    }
+    u[19] |= (n as u32) << 24;
+    u
 }
 
 /// A painted skin: pictures of the aircraft seen from straight above, from
