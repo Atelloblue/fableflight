@@ -63,6 +63,7 @@ mod mvt;
 mod plane;
 mod render;
 mod single_sample;
+mod stroke_font;
 mod roads;
 mod skin;
 mod sources;
