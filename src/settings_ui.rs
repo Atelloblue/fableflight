@@ -1106,4 +1106,101 @@ mod tests {
         assert_eq!(crate::menu::Page::parse("controls"), Some(crate::menu::Page::Controls));
         assert_eq!(crate::menu::Page::parse("graphics"), None);
     }
+
+    #[test]
+    fn controls_ui_does_not_panic() {
+        let ctx = egui::Context::default();
+        let binds = bind::Bindings::default();
+        let mut look_sens = 1.0f32;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        card(ui, t!("settings.mouse"), |ui| {
+                            row(ui, t!("settings.mouse_look_speed"), t!("settings.dragging_to_look_around"), |ui| {
+                                ui.add(egui::Slider::new(&mut look_sens, 0.25..=3.0).logarithmic(true).custom_formatter(|v, _| format!("{v:.2}×")));
+                            });
+                        });
+                        let _words = menu::search_box(ui, "bindings", t!("menu.search_bindings"), ui.available_width().min(460.0));
+                        ui.add_space(6.0);
+                        card(ui, t!("settings.gamepad"), |ui| {
+                            let cw = ui.available_width();
+                            bind_grid(ui, "pad_binds", |ui| {
+                                for a in padmap::PadAxis::ALL {
+                                    let src = binds.pad.axis(a);
+                                    grid_label(ui, a.label(), cw);
+                                    pad_cell(ui, src.map(|s| s.stick.spec()), binds.pad.axis_moved(a));
+                                    ui.horizontal(|ui| {
+                                        let _ = ui.button(t!("settings.change"));
+                                    });
+                                    ui.end_row();
+                                }
+                                for _ in 0..3 {
+                                    ui.allocate_space(vec2(0.0, 4.0));
+                                }
+                                ui.end_row();
+                                for &(id, _) in padmap::actions() {
+                                    let moved = binds.pad.is_moved(id);
+                                    let chord = binds.pad.chord(id);
+                                    grid_label(ui, padmap::label(id), cw);
+                                    pad_cell(ui, chord.map(|c| if c == padmap::Y_ALONE { t!("settings.y_let_go").to_string() } else { c.spec() }), moved);
+                                    ui.horizontal(|ui| {
+                                        let _ = ui.button(t!("settings.change"));
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                        card(ui, t!("settings.joystick_axes"), |ui| {
+                            let cw = ui.available_width();
+                            bind_grid(ui, "bind_axes", |ui| {
+                                for a in bind::AxisAct::ALL {
+                                    grid_label(ui, a.label(), cw);
+                                    binding_cell(ui, binds.describe_axis(a), false);
+                                    ui.horizontal(|ui| {
+                                        let _ = ui.button(t!("settings.assign"));
+                                    });
+                                    ui.horizontal(|_ui| {});
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                        card(ui, t!("settings.buttons_joystick_throttle_wheel"), |ui| {
+                            let cw = ui.available_width();
+                            bind_grid(ui, "bind_buttons", |ui| {
+                                for a in bind::ACTIONS {
+                                    grid_label(ui, a.label(), cw);
+                                    binding_cell(ui, binds.describe_button(a.id), false);
+                                    ui.horizontal(|ui| {
+                                        let _ = ui.button(t!("settings.assign"));
+                                    });
+                                    ui.label("");
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                        card(ui, t!("settings.keyboard"), |ui| {
+                            let cw = ui.available_width();
+                            bind_grid(ui, "bind_keys", |ui| {
+                                for a in bind::ACTIONS.iter().filter(|a| a.keyboard) {
+                                    grid_label(ui, a.label(), cw);
+                                    let keys = binds.key_of(a).map(bind::key_name);
+                                    binding_cell(ui, keys, false);
+                                    ui.horizontal(|ui| {
+                                        let _ = ui.button(t!("settings.change"));
+                                    });
+                                    ui.label("");
+                                    ui.end_row();
+                                }
+                            });
+                        });
+                        card(ui, t!("settings.key_reference"), |ui| {
+                            menu::controls_list(ui);
+                        });
+                    });
+                });
+            });
+            out.textures_delta.clear();
+        }
+    }
 }
