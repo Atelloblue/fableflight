@@ -58,6 +58,12 @@ pub struct Minimap {
     runway_airports: Vec<u32>,
     runway_center: Option<glam::DVec3>,
     runway_reach: f64,
+    /// the VFR chart's layers, the radios' stations, the track flown
+    pub layers: crate::vfrmap::Layers,
+    pub tuned: crate::vfrmap::Tuned,
+    pub trail: crate::vfrmap::Trail,
+    /// the chart's symbols as last painted, for the pointer
+    hits: Vec<crate::vfrmap::Hit>,
 }
 
 /// What one paint of the map shows: where, at what zoom, centred on what.
@@ -93,6 +99,22 @@ impl View {
     /// a point (Web Mercator, 0..1) on the screen.
     fn project(&self, x: f64, y: f64) -> Pos2 {
         self.rect.center() + rotate(Vec2::new((tile_offset(x * self.n, self.cx, self.n) * 256.0) as f32, ((y * self.n - self.cy) * 256.0) as f32), self.angle)
+    }
+    /// The VFR chart's view of this one.
+    fn scene<'a>(&self, project: &'a dyn Fn(f64, f64) -> Pos2, fits: &'a dyn Fn(egui::Rect) -> bool) -> crate::vfrmap::Scene<'a> {
+        // a circle round the corners, so the heading-up map is covered too.
+        let half = (self.rect.width().hypot(self.rect.height()) * 0.5) as f64 / 256.0;
+        crate::vfrmap::Scene {
+            rect: self.rect,
+            zoom: self.zoom,
+            lat0: geo::merc_y_to_lat(((self.cy + half) / self.n).min(1.0)).to_degrees(),
+            lat1: geo::merc_y_to_lat(((self.cy - half) / self.n).max(0.0)).to_degrees(),
+            lon: self.lon.to_degrees(),
+            half_lon: half / self.n * 360.0,
+            north: rotate(Vec2::new(0.0, -1.0), self.angle),
+            project,
+            fits,
+        }
     }
     /// a screen point back to (lat, lon) in radians.
     fn unproject(&self, p: Pos2) -> (f64, f64) {
@@ -571,6 +593,16 @@ impl Minimap {
             self.draw_runways(world, painter, view, &outline, &mut occupied);
             if let Some(guide) = guide { guide.draw_map(painter, rect, view.cx, view.cy, view.n, view.angle); }
         }
+        // the VFR chart and the track flown.
+        let at = view.project(geo::lon_to_merc_x(aircraft.1).rem_euclid(1.0), geo::lat_to_merc_y(aircraft.0));
+        self.hits.clear();
+        if supported {
+            let project = |la: f64, lo: f64| view.project(geo::lon_to_merc_x(lo.to_radians()).rem_euclid(1.0), geo::lat_to_merc_y(la.to_radians()));
+            let fits = |r: egui::Rect| in_disc(r, &outline, 4.0);
+            let scene = view.scene(&project, &fits);
+            self.trail.draw(painter, &scene, at);
+            self.hits = crate::vfrmap::draw(painter, &scene, self.layers, &self.tuned, &mut occupied);
+        }
         if !supported || drawn == 0 {
             painter.text(rect.center() + Vec2::new(0.0, 32.0), egui::Align2::CENTER_CENTER,
                 if !supported { crate::t!("minimap.map_unavailable_near_poles") }
@@ -578,7 +610,6 @@ impl Minimap {
                 else { crate::t!("minimap.imagery_unavailable") }, egui::FontId::proportional(12.0), Color32::WHITE);
         }
         // the destination route & pin, if set.
-        let at = view.project(geo::lon_to_merc_x(aircraft.1).rem_euclid(1.0), geo::lat_to_merc_y(aircraft.0));
         if let Some(dest) = &self.destination {
             let dp = view.project(geo::lon_to_merc_x(dest.lon).rem_euclid(1.0), geo::lat_to_merc_y(dest.lat));
             painter.line_segment([at, dp], Stroke::new(4.0, Color32::from_black_alpha(130)));
@@ -643,11 +674,23 @@ impl Minimap {
     pub fn new(prefs: &crate::settings::Settings) -> Self {
         Self { visible: prefs.minimap, landing_guidance: prefs.landing_guidance, heading_up: prefs.minimap_heading_up, zoom: prefs.minimap_zoom,
             size: Vec2::splat(prefs.minimap_size), bottom: 65.0, top: 0.0, resize_start: 0.0, full: false, full_zoom: prefs.minimap_zoom.saturating_sub(2).max(3), full_center: None, full_scroll: 0.0, destination: None,
-            plan: prefs.minimap_plan, maps: HashMap::new(), map_pending: Vec::new(), heading: 0.0, scroll: 0.0, tiles: HashMap::new(), pending: Vec::new(), generation: 0, frame: 0, runway_airports: Vec::new(), runway_center: None, runway_reach: 0.0 }
+            plan: prefs.minimap_plan, maps: HashMap::new(), map_pending: Vec::new(), heading: 0.0, scroll: 0.0, tiles: HashMap::new(), pending: Vec::new(), generation: 0, frame: 0, runway_airports: Vec::new(), runway_center: None, runway_reach: 0.0,
+            layers: crate::vfrmap::Layers { airports: prefs.map_airports, navaids: prefs.map_navaids }, tuned: Default::default(), trail: Default::default(), hits: Vec::new() }
     }
 
     pub fn set_destination(&mut self, lat: f64, lon: f64, name: Option<String>) {
         self.destination = Some(Destination { lat, lon, name });
+    }
+
+    /// What a click at `p` points at: a symbol of the chart under it, or the
+    /// spot itself, named after an airport near it (radians).
+    fn pick(&self, view: &View, p: Pos2) -> (f64, f64, Option<String>) {
+        if let Some(t) = crate::vfrmap::hit_at(&self.hits, p, 12.0) {
+            let (la, lo) = t.lat_lon();
+            return (la.to_radians(), lo.to_radians(), Some(t.name()));
+        }
+        let (dlat, dlon) = view.unproject(p);
+        (dlat, dlon, nearest_airport_name(dlat, dlon, view, p))
     }
 
     pub fn clear_destination(&mut self) {
@@ -757,8 +800,7 @@ impl Minimap {
                     self.clear_destination();
                 } else if response.clicked() && over_disc {
                     if let Some(p) = response.interact_pointer_pos() {
-                        let (dlat, dlon) = view.unproject(p);
-                        let name = nearest_airport_name(dlat, dlon, &view, p);
+                        let (dlat, dlon, name) = self.pick(&view, p);
                         self.set_destination(dlat, dlon, name);
                     }
                 }
@@ -851,19 +893,24 @@ impl Minimap {
                 self.clear_destination();
             } else if response.clicked() {
                 if let Some(p) = response.interact_pointer_pos() {
-                    let (dlat, dlon) = view.unproject(p);
-                    let name = nearest_airport_name(dlat, dlon, &view, p);
+                    let (dlat, dlon, name) = self.pick(&view, p);
                     self.set_destination(dlat, dlon, name);
                 }
             }
             let painter = ui.painter_at(rect);
             // the toolbar, the hint and the aircraft keep names off them.
-            let bar = egui::Rect::from_min_max(Pos2::new(rect.right() - 260.0, rect.top()), Pos2::new(rect.right(), rect.top() + 56.0));
+            let bar = egui::Rect::from_min_max(Pos2::new(rect.right() - 340.0, rect.top()), Pos2::new(rect.right(), rect.top() + 56.0));
             let title = egui::Rect::from_min_size(rect.left_top(), Vec2::new(300.0, 56.0));
             let hint = egui::Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - 44.0), Pos2::new(rect.left() + 420.0, rect.bottom()));
             let scale_chip = egui::Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 22.0), Vec2::new(84.0, 32.0));
             let plane_at = view.project(aircraft.x, aircraft.y);
             self.paint(ctx, src, &painter, &view, (lat, lon), guide, world, vec![bar, title, hint, scale_chip, egui::Rect::from_center_size(plane_at, Vec2::splat(38.0))]);
+            // what the pointer is on.
+            let hover = response.hover_pos().filter(|_| !response.dragged()).and_then(|p| crate::vfrmap::hit_at(&self.hits, p, 12.0).map(|t| (p, t)));
+            if let Some((p, t)) = hover {
+                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                crate::vfrmap::card(&painter, p, t, (lat.to_degrees(), lon.to_degrees()), rect);
+            }
             // the title.
             let name = painter.layout_no_wrap(crate::t!("minimap.map").to_string(), crate::menu::semibold(18.0), Color32::WHITE);
             let chip = egui::Rect::from_min_size(rect.left_top() + Vec2::new(14.0, 14.0), name.size() + Vec2::new(20.0, 10.0));
@@ -925,6 +972,17 @@ impl Minimap {
                 p.line_segment([m + Vec2::new(-4.5, -4.5), m + Vec2::new(4.5, 4.5)], stroke(c));
             }) {
                 self.clear_destination();
+            }
+            x -= 8.0;
+            // the chart's layers, lit when shown.
+            let on = |b: bool, c: Color32| if b { c } else { Color32::from_white_alpha(90) };
+            let navaids = self.layers.navaids;
+            if button(ui, &mut x, 32.0, "navaids", crate::t!("vfr.radio_beacons"), &|p, r, c| crate::vfrmap::navaid_icon(p, r.center(), on(navaids, if c == Color32::WHITE { crate::vfrmap::VOR } else { c }))) {
+                self.layers.navaids = !navaids;
+            }
+            let airports = self.layers.airports;
+            if button(ui, &mut x, 32.0, "airports", crate::t!("vfr.airports"), &|p, r, c| crate::vfrmap::airport_icon(p, r.center(), on(airports, if c == Color32::WHITE { crate::vfrmap::TOWERED } else { c }))) {
+                self.layers.airports = !airports;
             }
             self.full_zoom = zoom;
             // north is up.
