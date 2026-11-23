@@ -252,6 +252,9 @@ impl Graphics {
                 Level::Ultra => t!("graphics.storms_ultra").into(),
             });
         });
+        row(ui, t!("graphics.contrails"), t!("graphics.contrails_hint"), |ui| {
+            menu::switch(ui, &mut self.contrails);
+        });
         row(ui, t!("graphics.terrain_detail"), "", |ui| levels(ui, &mut self.terrain, false));
         row(ui, t!("graphics.scenery_distance"), "", |ui| {
             levels(ui, &mut self.scenery, false);
@@ -541,7 +544,7 @@ mod tests {
     fn high_is_the_old_look() {
         let g = Graphics::default();
         assert_eq!((g.scale, g.shadow_res(), g.cloud_step(), g.lod_k(), g.reach(), g.ao), (1.0, 4096, 1.0, 0.62, 1.0, true));
-        assert_eq!((g.storms, g.storm_tier(), g.storm_max_cells()), (Level::High, 3.0, crate::weather::MAX_STORMS));
+        assert_eq!((g.storms, g.storm_tier(), g.storm_max_cells(), g.contrails), (Level::High, 3.0, crate::weather::MAX_STORMS, true));
         assert_eq!((g.city_k(), g.tree_far(), g.tree_imp_k(), g.car_density()), (1.0, 3200.0, 1.0, (1.0, 2200.0, 1100.0)));
         assert_eq!((g.clouds_on(), g.cloud_shadows, g.cloud_shadow_slices(), g.msaa, g.ssr(), g.water_detail()), (true, true, 16, 4, true, 2.0));
     }
@@ -556,7 +559,7 @@ mod tests {
     #[test]
     fn very_low_drops_the_fixed_costs() {
         let g = Graphics::preset(Preset::VeryLow);
-        assert_eq!((g.scale, g.shadows, g.ao, g.msaa, g.cloud_shadows, g.water_detail()), (0.5, Level::Off, false, 1, false, 0.0));
+        assert_eq!((g.scale, g.shadows, g.ao, g.msaa, g.cloud_shadows, g.contrails, g.water_detail()), (0.5, Level::Off, false, 1, false, false, 0.0));
         assert_eq!((g.cars, g.birds, g.car_density().0), (Level::Off, Level::Off, 0.0));
         assert!(g.clouds_on(), "Very Low keeps the clouds (Off is a choice of its own)");
         assert_eq!(integrated_preset(0x8086), Preset::VeryLow);

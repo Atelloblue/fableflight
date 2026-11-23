@@ -162,6 +162,8 @@ pub struct Graphics {
     /// storm cell rendering detail (separate from ordinary clouds so heavy
     /// thunderstorm, supercell and squall-line skies can be tuned on their own)
     pub storms: Level,
+    /// condensation trails behind the player's aircraft and AI/live traffic
+    pub contrails: bool,
     pub terrain: Level,
     /// how far out buildings and trees are loaded
     pub scenery: Level,
@@ -204,7 +206,7 @@ pub const SCALE_MAX: f32 = 2.0;
 impl Graphics {
     /// One of the presets (taa and vsync on).
     pub fn preset(p: Preset) -> Self {
-        let mut g = Graphics { scale: 1.0, shadows: Level::High, clouds: Level::High, cloud_shadows: true, storms: Level::High, terrain: Level::High, scenery: Level::High, city: Level::High, trees: Level::High, cars: Level::High, birds: Level::High, ao: true, water: Level::High, msaa: 4, taa: true, upscaler: Upscaler::Bilinear, vsync: true, fps_cap: 0 };
+        let mut g = Graphics { scale: 1.0, shadows: Level::High, clouds: Level::High, cloud_shadows: true, storms: Level::High, contrails: true, terrain: Level::High, scenery: Level::High, city: Level::High, trees: Level::High, cars: Level::High, birds: Level::High, ao: true, water: Level::High, msaa: 4, taa: true, upscaler: Upscaler::Bilinear, vsync: true, fps_cap: 0 };
         g.apply(p);
         g
     }
@@ -223,6 +225,7 @@ impl Graphics {
         self.clouds = l;
         self.cloud_shadows = !very_low;
         self.storms = l;
+        self.contrails = !very_low;
         self.terrain = l;
         self.scenery = l;
         self.city = l;
@@ -296,6 +299,7 @@ impl Graphics {
         g.clouds = j["clouds"].as_str().and_then(Level::parse).unwrap_or(g.clouds);
         g.cloud_shadows = j["cloud_shadows"].as_bool().unwrap_or(g.cloud_shadows);
         g.storms = lvl("storms", if g.clouds == Level::Off { Level::Low } else { g.clouds });
+        g.contrails = j["contrails"].as_bool().unwrap_or(g.contrails);
         g.terrain = lvl("terrain", g.terrain);
         g.scenery = lvl("scenery", g.scenery);
         g.city = lvl("city", g.city);
@@ -319,6 +323,7 @@ impl Graphics {
             "clouds": self.clouds.name(),
             "cloud_shadows": self.cloud_shadows,
             "storms": self.storms.name(),
+            "contrails": self.contrails,
             "terrain": self.terrain.name(),
             "scenery": self.scenery.name(),
             "city": self.city.name(),
