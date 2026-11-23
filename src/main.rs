@@ -1030,6 +1030,13 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// Runs that stay off the network unless `--mp` asks: offline, and the
+/// scripted ones (screenshots, recordings, benchmarks, headless checks),
+/// so they neither show up to the other pilots nor depend on the relays.
+fn mp_kept_off(a: &Args) -> bool {
+    a.offline || a.bench.is_some() || !a.shots.is_empty() || std::env::args().any(|x| matches!(x.as_str(), "--headless" | "--record" | "--still"))
+}
+
 /// `--still`: screenshots for the aircraft picker, the aircraft alone on a
 /// transparent background (post.wgsl `finish` keys it out by depth, so fly it
 /// clear of the ground and anything else within 150 m), saved with alpha.
@@ -1441,6 +1448,9 @@ struct Game {
     /// multiplayer (mp.rs): switched on, the relay and our name (settings),
     /// the connection while flying, and the other players this frame
     mp_on: bool,
+    /// multiplayer is on in the settings but kept off for this run (scripted
+    /// or offline): saved as on all the same, until changed by hand
+    mp_held: bool,
     mp_server: String,
     mp_name: String,
     mp: Option<mp::Mp>,
@@ -1558,7 +1568,10 @@ impl Bench {
 
 impl Game {
     fn new(window: Arc<Window>, args: &Args) -> anyhow::Result<Self> {
-        let prefs = settings::Settings::load();
+        let (prefs, fresh) = settings::Settings::load_new();
+        if fresh && !std::env::args().any(|a| a == "--headless" || a == "--shot" || a == "--record" || a == "--bench") {
+            prefs.save();
+        }
         // Saved graphics settings; the command line overrides them for this run.
         let mut gfx = graphics::Graphics::load();
         if let Some(l) = args.graphics {
@@ -1804,7 +1817,8 @@ impl Game {
             prefs_lang: args.lang.or(prefs.lang),
             prefs_t: 0.0,
             live: live::Live::new(prefs.live_traffic),
-            mp_on: prefs.multiplayer || args.mp.is_some(),
+            mp_on: (prefs.multiplayer && !mp_kept_off(args)) || args.mp.is_some(),
+            mp_held: prefs.multiplayer && mp_kept_off(args) && args.mp.is_none(),
             mp_server: args.mp.as_ref().map_or(prefs.mp_server.clone(), |m| m.0.clone()),
             mp_name: args.mp.as_ref().and_then(|m| m.1.clone()).unwrap_or(prefs.mp_name.clone()),
             mp: None,
@@ -5337,7 +5351,7 @@ impl Game {
 
     /// The settings worth keeping, as they are now.
     fn live_settings(&self) -> settings::Settings {
-        settings::Settings { lang: self.prefs_lang, sound_on: self.sound_on, volume: self.volume, cam_mode: self.cam_mode, cockpit_fov: self.cockpit_fov, look_sens: self.look_sens, invert_look_cockpit: self.invert_look_cockpit, invert_look_outside_x: self.invert_look_outside_x, invert_look_outside_y: self.invert_look_outside_y, show_hud: self.show_hud, hud_cockpit: self.hud_cockpit, path_marker: self.path_marker, minimap: self.minimap.visible, landing_guidance: self.minimap.landing_guidance, arcade: self.arcade, minimap_plan: self.minimap.plan, minimap_heading_up: self.minimap.heading_up, minimap_zoom: self.minimap.zoom, minimap_size: self.minimap.size.x, minimap_height: self.minimap.size.y, taa: self.gfx.taa, live_traffic: self.live.enabled(), live_weather: self.wx.live, real_time: self.wx.real_time, snow: self.snow, last: self.last_start.clone(), multiplayer: self.mp_on, mp_server: self.mp_server.clone(), mp_name: self.mp_name.clone() }
+        settings::Settings { lang: self.prefs_lang, sound_on: self.sound_on, volume: self.volume, cam_mode: self.cam_mode, cockpit_fov: self.cockpit_fov, look_sens: self.look_sens, invert_look_cockpit: self.invert_look_cockpit, invert_look_outside_x: self.invert_look_outside_x, invert_look_outside_y: self.invert_look_outside_y, show_hud: self.show_hud, hud_cockpit: self.hud_cockpit, path_marker: self.path_marker, minimap: self.minimap.visible, landing_guidance: self.minimap.landing_guidance, arcade: self.arcade, minimap_plan: self.minimap.plan, minimap_heading_up: self.minimap.heading_up, minimap_zoom: self.minimap.zoom, minimap_size: self.minimap.size.x, minimap_height: self.minimap.size.y, taa: self.gfx.taa, live_traffic: self.live.enabled(), live_weather: self.wx.live, real_time: self.wx.real_time, snow: self.snow, last: self.last_start.clone(), multiplayer: self.mp_on || self.mp_held, mp_server: self.mp_server.clone(), mp_name: self.mp_name.clone() }
     }
 
     /// Saves the settings when they have changed (looked at once a second,
