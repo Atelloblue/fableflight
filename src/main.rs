@@ -8161,7 +8161,7 @@ impl Game {
             if self.show_help {
                 egui::Area::new(egui::Id::unique("help")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     menu::panel().show(ui, |ui| {
-                        ui.set_width(600.0);
+                        ui.set_width((ctx.content_rect().width() - 80.0).clamp(320.0, 820.0));
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(t!("game.controls")).font(menu::page_title()).color(Color32::WHITE));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -8169,7 +8169,9 @@ impl Game {
                             });
                         });
                         ui.add_space(4.0);
-                        menu::controls_list(ui);
+                        egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 160.0).max(200.0)).auto_shrink([false, true]).show(ui, |ui| {
+                            menu::controls_list(ui);
+                        });
                     });
                 });
             }

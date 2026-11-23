@@ -27,6 +27,13 @@ menu.on = "Activé"
 menu.off = "Désactivé"
 menu.click_or_drag_to_choose = "Cliquez ou glissez pour choisir le cap"
 menu.w = "O"
+menu.keyboard = "Clavier"
+menu.gamepad = "Manette"
+menu.search_controls = "Chercher une commande"
+menu.search_bindings = "Chercher une affectation"
+menu.clear_search = "Effacer la recherche"
+menu.no_controls_match = "Aucune commande ne correspond."
+menu.more_matches_on = "{n} de plus dans l'onglet {tab}"
 
 # ---- main.rs: start panel, flight panel, HUD, messages
 game.low_softer_buildings_4_km = "Faible : bâtiments plus flous, 4 km autour de l'avion. Environ 45 Mo par minute au-dessus d'une ville (une connexion à 6 Mbit/s suffit), 250 Mo de mémoire GPU."
