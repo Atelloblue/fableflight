@@ -117,7 +117,7 @@ When using optional Google Maps imagery/3D tiles, prefer setting the `FABLE_GOOG
 
 ## Multiplayer
 
-Connect from the **Multiplayer** settings. To host a relay:
+Multiplayer is on by default, under a random pilot name (such as `SwiftKestrel27`). Change the name, pick a server, or turn multiplayer off in the **Multiplayer** settings. Offline and scripted runs (`--offline`, `--shot`, `--record`, `--bench`, `--headless`) stay off the network unless `--mp` is given. To host a relay:
 
 ```sh
 cd relay
