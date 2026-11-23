@@ -1143,6 +1143,8 @@ struct Targets {
 
 pub struct Renderer {
     gpu_timer: Option<crate::gputime::GpuTimer>,
+    /// the whole frame's GPU time, read without waiting (dynamic graphics)
+    frame_clock: Option<crate::gputime::FrameClock>,
     ground_mats: GroundMats,
     pub device: wgpu::Device,
     /// --fps-log: seconds spent this period in the game's own update, waiting
@@ -1928,7 +1930,7 @@ impl Renderer {
         let afeat = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let ok = samples == 4 || samples == 1 || (adapter.features().contains(afeat) && [HDR, AMB, DEPTH].iter().all(|f| adapter.get_texture_format_features(*f).flags.sample_count_supported(samples)));
         MSAA_N.store(if ok { samples } else { 4 }, std::sync::atomic::Ordering::Relaxed);
-        let required_features = if msaa() != 4 && msaa() != 1 { afeat } else { wgpu::Features::empty() } | crate::gputime::GpuTimer::features(&adapter);
+        let required_features = if msaa() != 4 && msaa() != 1 { afeat } else { wgpu::Features::empty() } | crate::gputime::GpuTimer::features(&adapter) | crate::gputime::FrameClock::features(&adapter);
         log::info!("MSAA {}x", msaa());
         let al = adapter.limits();
         if al.max_texture_dimension_2d < 8192
@@ -2948,6 +2950,7 @@ impl Renderer {
             ground_mats,
             casc_ub, bg_casc, bg_tileu, l_dres, l_ao, p_gtao, p_ao_blur, p_dres, p_road, p_field, p_lights, dyn_lights, p_rain, p_veil, p_bolt, bolt_buf, p_contrails, bg_contrails, contrail_nodes, contrail_segs, p_tree, p_tree_near, imp, p_tree_shadow, p_tree_shadow_fixed, p_card, near_buf, p_inst, p_inst_shadow, inst_buf, fall_buf, tree_lib: None, inst_lib: None,
             gpu_timer: crate::gputime::GpuTimer::new(&device, &queue),
+            frame_clock: crate::gputime::FrameClock::new(&device, &queue),
             globals_ub, bg0, bg0_pre, bg0_shadow, lut_sky, shadow, shadow_res: SHADOW_RES, bg0_src, scale: 1.0, ao: true, cloud_step: 1.0, l_tile, l_build, l_comp_cls, l_comp_main, l_comp_edge, l_comp_globe, l_hiz, ap_l, ap_t, cloud_refl, bg_atmlut, bg_comp_sky, p_hiz_build, p_ap_build, p_sky_build, p_cloud_refl, p_cloud_refl_plain, l_cloud, l_cloud_storm, l_cloud_rain, l_cloud_apply, l_cloud_temporal, l_post, l_pdraw, l_glass,
             tile_ub, l_photo, photo_ub, p_photo, p_photo_mask, p_photo_shadow, p_photo_shadow_fast, l_skin, p_skin, skin_slots, p_water_top, p_lamp_top, photo_mask, photo_mask_dirty: true, light_cover, light_cover_view, glow_tex, gclouds_tex, snow_tex, snow_track_tex, build_ub, obj_ub, bg_obj, l_obj, paint_ub, font_ub, tile_ibuf, tile_nidx: ix.len() as u32,
             p_sky, p_terrain, p_terrain_far, p_terrain_water, p_terrain_tess, p_terrain_cells, p_terrain_photo, p_terrain_tess_photo, p_terrain_cells_photo, tess_ibuf, tess_idx, tess_buf, tess_cap, cell_ibuf, p_build, p_build_whole, p_build_shadow, obj_gen: None, obj_gen_rx: Some(obj_gen_rx), wait_objs: false, obj_wait: None, obj_src, pl_obj, obj_fast: None, obj_fast_rx: None, p_comp_cls, p_comp_sky, p_comp_opaque, p_comp_glass, p_comp_water, p_comp_edge, p_composite, p_composite_edge, p_cloud, p_cloud_plain, p_cloud_classify, p_cloud_plain_cls, p_cloud_storm_cls, p_cloud_rain, p_cloud_apply, p_cloud_temporal, p_particles, p_taa, p_psim, p_down, p_up, p_final, p_final_taa, p_blit,
@@ -3105,6 +3108,11 @@ impl Renderer {
         if self.up.set(u, self.scale) {
             self.rebuild_upscale();
         }
+    }
+
+    /// The GPU time of a recent frame (ms), where the adapter has timestamps.
+    pub fn frame_gpu_ms(&self) -> Option<f32> {
+        self.frame_clock.as_ref().and_then(|c| c.last)
     }
 
     /// Render resolution as a share of the window's (graphics settings).
@@ -3742,6 +3750,9 @@ impl Renderer {
         self.fluid.poll();
         let t = &self.targets;
         let mut enc = self.device.create_command_encoder(&Default::default());
+        if let Some(c) = self.frame_clock.as_mut() {
+            c.begin(&mut enc);
+        }
         let mut gt = self.gpu_timer.take();
         let gtr = gt.as_ref();
         let mut mark = |enc: &mut wgpu::CommandEncoder, l: &'static str| {
@@ -4824,7 +4835,13 @@ impl Renderer {
         if let Some(g) = gt.as_mut() {
             g.resolve(&mut enc);
         }
+        if let Some(c) = self.frame_clock.as_mut() {
+            c.end(&mut enc);
+        }
         self.queue.submit([enc.finish()]);
+        if let Some(c) = self.frame_clock.as_mut() {
+            c.after_submit();
+        }
         crate::gputime::cpu("render.submit");
         if let Some(g) = gt.as_mut() {
             g.collect(&self.device);
