@@ -451,8 +451,11 @@ impl Game {
             row(ui, t!("settings.invert_cockpit_view"), t!("settings.invert_view_hint"), |ui| {
                 menu::switch(ui, &mut self.invert_look_cockpit);
             });
-            row(ui, t!("settings.invert_outside_view"), t!("settings.invert_view_hint"), |ui| {
-                menu::switch(ui, &mut self.invert_look_outside);
+            row(ui, t!("settings.invert_outside_horizontal"), t!("settings.invert_view_hint"), |ui| {
+                menu::switch(ui, &mut self.invert_look_outside_x);
+            });
+            row(ui, t!("settings.invert_outside_vertical"), t!("settings.invert_view_hint"), |ui| {
+                menu::switch(ui, &mut self.invert_look_outside_y);
             });
         });
     }
