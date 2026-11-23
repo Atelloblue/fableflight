@@ -868,7 +868,7 @@ impl Game {
     /// then every action, each bound from the pad itself.
     fn binds_pad(&mut self, ui: &mut Ui) {
         use bind::Capture;
-        use padmap::{AxisSrc, PadAxis};
+        use padmap::{AxisSrc, PadAxis, Thumb};
         let busy = self.binds.capture.is_some();
         note(ui, t!("settings.in_the_menus_the_pad"));
         if self.pad_note.1 > self.real {
@@ -898,6 +898,27 @@ impl Game {
                         if menu::toggle(ui, &mut inv, t!("settings.invert")).changed() {
                             self.binds.pad.set_axis(a, Some(AxisSrc { sign: -s.sign, ..s }));
                         }
+                    }
+                });
+                ui.end_row();
+            }
+            // Each thumbstick's dead zone, for a pad that drifts at rest.
+            for t in Thumb::ALL {
+                let mut d = self.binds.pad.dead(t);
+                grid_label(ui, t.label(), cw);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = 70.0;
+                    if ui.add(egui::Slider::new(&mut d, 0.0..=padmap::DEAD_MAX).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)))
+                        .on_hover_text(t!("settings.dead_zone_how_much_travel"))
+                        .changed()
+                    {
+                        self.binds.pad.set_dead(t, d);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    dead_zone_box(ui, t, d, self.pad_live);
+                    if d != t.default_dead() && ui.add_enabled(!busy, egui::Button::new(t!("settings.default"))).clicked() {
+                        self.binds.pad.set_dead(t, t.default_dead());
                     }
                 });
                 ui.end_row();
@@ -1031,6 +1052,56 @@ impl Game {
 }
 
 /// the grid every bindings table shares, so their columns line up.
+/// Where a thumbstick (or the triggers) is now, against its dead zone: a
+/// box with the zone shaded and a dot for the stick, lit once it gets
+/// through; the triggers as two bars. Then how far off centre it reads, to
+/// see what a pad at rest drifts to.
+fn dead_zone_box(ui: &mut Ui, t: padmap::Thumb, d: f32, live: Option<padmap::Live>) {
+    let side = 56.0;
+    let (r, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+    let p = ui.painter();
+    let zone = ACCENT.gamma_multiply(0.22);
+    p.rect_filled(r, 3.0, Color32::from_black_alpha(90));
+    let v = live.map(|l| l.at(t)).unwrap_or_default();
+    let lit = live.map(|l| l.through(t, d)).unwrap_or_default();
+    if t == padmap::Thumb::Triggers {
+        // LT and RT, filling up from the bottom; the zone along the bottom.
+        let gap = 6.0;
+        let w = (side - gap * 3.0) * 0.5;
+        for (i, (v, lit)) in v.into_iter().zip(lit).enumerate() {
+            let x = r.left() + gap + i as f32 * (w + gap);
+            let bar = Rect::from_min_max(pos2(x, r.top() + 4.0), pos2(x + w, r.bottom() - 4.0));
+            p.rect_stroke(bar, 1.0, Stroke::new(1.0, DIM), egui::StrokeKind::Inside);
+            p.rect_filled(Rect::from_min_max(pos2(bar.left(), bar.bottom() - bar.height() * d), bar.max), 0.0, zone);
+            if live.is_some() {
+                let col = if lit { ACCENT } else { TEXT };
+                p.rect_filled(Rect::from_min_max(pos2(bar.left(), bar.bottom() - bar.height() * v.clamp(0.0, 1.0)), bar.max), 0.0, col.gamma_multiply(0.8));
+            }
+        }
+    } else {
+        // Each way reads nothing inside its band: a cross, shaded.
+        let (c, h) = (r.center(), side * 0.5);
+        p.rect_filled(Rect::from_center_size(c, vec2(side * d, side)), 0.0, zone);
+        p.rect_filled(Rect::from_center_size(c, vec2(side, side * d)), 0.0, zone);
+        p.line_segment([pos2(c.x, r.top()), pos2(c.x, r.bottom())], Stroke::new(1.0, DIM.gamma_multiply(0.5)));
+        p.line_segment([pos2(r.left(), c.y), pos2(r.right(), c.y)], Stroke::new(1.0, DIM.gamma_multiply(0.5)));
+        if live.is_some() {
+            let dot = pos2(c.x + v[0].clamp(-1.0, 1.0) * h, c.y - v[1].clamp(-1.0, 1.0) * h);
+            p.circle_filled(dot, 3.5, if lit[0] || lit[1] { ACCENT } else { TEXT });
+        }
+    }
+    p.rect_stroke(r, 3.0, Stroke::new(1.0, DIM), egui::StrokeKind::Inside);
+    // The reading, in the slider's terms.
+    let text = match live {
+        Some(_) => {
+            let (a, b) = if t == padmap::Thumb::Triggers { ("LT", "RT") } else { ("X", "Y") };
+            format!("{a} {:.0}%  {b} {:.0}%", v[0].abs() * 100.0, v[1].abs() * 100.0)
+        }
+        None => t!("settings.no_gamepad").to_string(),
+    };
+    ui.add_sized(vec2(96.0, side), egui::Label::new(RichText::new(text).font(menu::caption()).color(DIM)));
+}
+
 fn bind_grid(ui: &mut Ui, id: &str, body: impl FnOnce(&mut Ui)) {
     egui::Grid::new(id).num_columns(4).spacing([16.0, 6.0]).min_row_height(30.0).show(ui, body);
 }

@@ -58,12 +58,14 @@ mod photonight;
 mod relight;
 mod rain;
 mod storm;
+mod contrails;
 mod weather;
 mod weapons;
 mod mvt;
 mod plane;
 mod render;
 mod single_sample;
+mod stroke_font;
 mod roads;
 mod skin;
 mod sources;
@@ -312,6 +314,7 @@ struct Args {
     storm_quality: Option<graphics::Level>,
     /// --dynamic FPS: dynamic quality on for this run, aiming for FPS (0: the display's)
     dynamic: Option<u16>,
+    contrails: Option<bool>,
     render_scale: Option<f32>,
     upscaler: Option<graphics::Upscaler>,
     /// log the frame rate once a second (average and slowest frame)
@@ -418,7 +421,7 @@ struct Args {
     mcp_port: u16,
 }
 
-const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
+const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--contrails | --no-contrails] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
 
 fn parse_args() -> Args {
     let v: Vec<String> = std::env::args().skip(1).collect();
@@ -465,6 +468,7 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
         graphics: None,
         storm_quality: None,
         dynamic: None,
+        contrails: None,
         render_scale: None,
         upscaler: None,
         fps_log: false,
@@ -888,6 +892,14 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
                 let s = req(flag, i)?;
                 a.storm_quality = Some(graphics::Level::parse(s).filter(|l| *l != graphics::Level::Off).ok_or_else(|| format!("{flag}: expected low, medium, high or ultra, got '{s}'"))?);
             }
+            "--contrails" => {
+                a.contrails = Some(true);
+                used = 1;
+            }
+            "--no-contrails" => {
+                a.contrails = Some(false);
+                used = 1;
+            }
             "--render-scale" => a.render_scale = Some((req_num(flag, i)? as f32).clamp(graphics::SCALE_MIN, graphics::SCALE_MAX)),
             "--upscaler" => {
                 let s = req(flag, i)?;
@@ -1279,6 +1291,8 @@ struct Game {
     /// the pad was used last, not the mouse: the middle of the cockpit view
     /// picks out the controls (see `pad_aim_at`)
     pad_aim: bool,
+    /// the pad's sticks as read now, for the dead zone boxes in Settings (None: no pad)
+    pad_live: Option<padmap::Live>,
     /// the camera look the view starts out at (right stick click goes back to it)
     cam_home: (f64, f64),
     rng: crash::Rng,
@@ -1390,6 +1404,9 @@ struct Game {
     /// birds around the camera (birds.rs), and the setting for this run if given
     birds: birds::Birds,
     birds_level: Option<graphics::Level>,
+    /// adaptive-LOD contrail simulation and reusable GPU draw buffer (contrails.rs)
+    contrails: contrails::Contrails,
+    contrail_draw: contrails::DrawData,
     /// bird instances drawn last frame (the fps log)
     bird_insts: usize,
     /// the flown aircraft's shape for bird strikes, and which type it is of
@@ -1542,6 +1559,9 @@ impl Game {
             gfx.dynamic = true;
             gfx.dyn_fps = f;
         }
+        if let Some(on) = args.contrails {
+            gfx.contrails = on;
+        }
         gfx.vsync &= args.vsync;
         if args.bench.is_some() {
             // the graphics test measures the GPU, not a frame limit
@@ -1559,6 +1579,9 @@ impl Game {
             gfx.apply(p);
             if let Some(l) = args.storm_quality {
                 gfx.storms = l;
+            }
+            if let Some(on) = args.contrails {
+                gfx.contrails = on;
             }
             log::info!("integrated graphics: {} preset until the graphics settings are saved", p.name());
         }
@@ -1757,13 +1780,13 @@ impl Game {
             cam_yaw: cy.to_radians(), cam_pitch: cp, cam_dist: cd, cam_mode: args.start_view.unwrap_or(prefs.cam_mode), view_before_tail: 0, cam_pos, cam_dir: -plane.forward(), cam_look: plane.pos, orbit: 0.0, cam_rise: 0.0, cam_clear_t: 0.0, cam_ang: None, cam_hold: 0.0,
             utc: (args.hour - lon / 15.0).rem_euclid(24.0), doy: args.day.unwrap_or(doy), wx, time: 0.0, real: 0.0, last: Instant::now(), acc: 0.0, wave_off: DVec2::ZERO, shore: shore::Shore::default(), ocean_off: DVec2::ZERO, prev_cam: cam_pos, prev_vp: [[0.0; 4]; 4], gfx, gfx_applied: None, gfx_eff: gfx, dynq: dynamic::Dynamic::default(), storms_seen: false, dyn_cli: args.dynamic.is_some(), prev_plane: Mat4::IDENTITY, plane_box, lamps,
             frame: 0, fps: 60.0, fps_log: (args.fps_log, Instant::now(), 0, 0.0), paused: false, show_help: false, show_hud: !args.no_hud && prefs.show_hud, hud_cockpit: prefs.hud_cockpit, path_marker: prefs.path_marker, arcade: args.arcade || prefs.arcade, goto_open: false, goto_text: String::new(), goto_rx: None,
-            status, status_until: 8.0, shots: args.shots.clone(), crash_at: args.crash_at, boost_at: args.boost_at, stage_at: args.stage_at, engines: args.engines, hold: args.hold, gilrs: open_gamepads(), pad: Controls::default(), pad_id: None, pad_fixed: Vec::new(), pad_events: Vec::new(), pad_move: None, pad_skip: None, pad_rep: None, pad_home: false, pad_y: false, pad_y_combo: false, pad_held: Vec::new(), pad_note: (String::new(), 0.0), pad_aim: false, ap: autopilot::Autopilot::default(), ap_off_t: -100.0, ap_script: args.ap_script.clone(), cam_home: (cy.to_radians(), cp), rng: crash::Rng(secs.to_bits() | 1),
+            status, status_until: 8.0, shots: args.shots.clone(), crash_at: args.crash_at, boost_at: args.boost_at, stage_at: args.stage_at, engines: args.engines, hold: args.hold, gilrs: open_gamepads(), pad: Controls::default(), pad_id: None, pad_fixed: Vec::new(), pad_events: Vec::new(), pad_move: None, pad_skip: None, pad_rep: None, pad_home: false, pad_y: false, pad_y_combo: false, pad_held: Vec::new(), pad_note: (String::new(), 0.0), pad_aim: false, pad_live: None, ap: autopilot::Autopilot::default(), ap_off_t: -100.0, ap_script: args.ap_script.clone(), cam_home: (cy.to_radians(), cp), rng: crash::Rng(secs.to_bits() | 1),
             audio: if args.record.is_some() { Some(audio::Audio::offline()) } else if args.mute { None } else { audio::Audio::new() },
             record: args.record.clone(), rec_audio: Vec::new(), rec_n: 0, rec_t0: Instant::now(), sound_on: prefs.sound_on, volume: prefs.volume, snow: args.snow.unwrap_or(prefs.snow), info_open: args.weather_panel, radial: Default::default(), info_page: if args.weather_panel { menu::Page::Weather } else { menu::Page::Flight }, pause_open: false, pause_page: menu::Page::Game, pause_at: args.pause_menu, radial_at: args.flight_menu, settings_sec: args.settings.unwrap_or(settings_ui::Section::General), look_sens: prefs.look_sens, head: cockpit::Head::new(cy.to_radians(), cp), cockpit_fov: args.fov.unwrap_or(prefs.cockpit_fov).clamp(30.0, 90.0), head_live: false, warn: audio::Warn::default(), warn_t: [-10.0; 4],
             g_slow: 1.0, last_bump: 0.0, was_ground: false, prev_vs: 0.0, prev_gear: plane.gear, prev_flaps: plane.flaps, quit: false,
             mode: if args.menu.unwrap_or(true) { Mode::Menu } else { Mode::Fly }, menu, menu_go: args.menu_go, heading: args.heading.to_radians(), destr: destruct::Destruction::new(secs.to_bits()),
             sheds: damage::Sheds::default(), fx_anchor: plane.pos, fx_shift: DVec3::ZERO, smoke_acc: 0.0, flash: Vec::new(), airport_note: (String::new(), -100.0), weapon_flash: None, kills: Vec::new(), damage_spec: args.damage.clone(), wreck_dirty: false, wreck_t: 0.0, wreck_seen: 0.0,
-            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, city_adapt: 0.0, city_probe: None, plane, weapons,
+            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, contrails: contrails::Contrails::new(), contrail_draw: contrails::DrawData::default(), bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, city_adapt: 0.0, city_probe: None, plane, weapons,
             airport_rx: None, hold_spot: None, bench: args.bench.map(Bench::new),
             prefs_lang: args.lang.or(prefs.lang),
             prefs_t: 0.0,
@@ -1924,6 +1947,7 @@ impl Game {
         self.head.center_seat();
         self.restore_wreck_meshes();
         self.sheds.items.clear();
+        self.contrails.clear();
         let next = match self.hangar.iter().position(|l| std::ptr::eq(l.spec, spec)) {
             Some(i) => self.hangar.swap_remove(i),
             None => match self.building.iter().position(|(s, _)| std::ptr::eq(*s, spec)) {
@@ -2231,6 +2255,7 @@ impl Game {
         self.weapons.reset(self.spec, &self.model.pieces);
         self.weapon_flash = None;
         self.kills.clear();
+        self.contrails.clear();
     }
 
     /// On the ground, at rest, waiting for the terrain under it to load.
@@ -3110,6 +3135,7 @@ impl Game {
         let id = self.pad_id.filter(|id| g.connected_gamepad(*id).is_some_and(|p| free(&p))).or_else(|| g.gamepads().find(|(_, p)| free(p)).map(|(id, _)| id));
         let Some(pad) = id.and_then(|id| g.connected_gamepad(id)) else {
             self.pad = Controls::default();
+            self.pad_live = None;
             padui::set_active(false);
             self.pad_aim = false;
             self.pad_rep = None;
@@ -3121,6 +3147,7 @@ impl Game {
             return;
         };
         padui::set_active(true);
+        self.pad_live = Some(pad_live(&pad));
         // Binding from the pad (Settings › Controls › Gamepad): its buttons
         // and sticks go to that alone.
         if let Some(cap) = self.binds.capture.clone().filter(|c| c.from_pad()) {
@@ -3185,12 +3212,13 @@ impl Game {
         } else {
             Nav::Off
         };
-        // A small dead zone, the rest of the travel rescaled so there is no step out of it.
-        let dz = |v: f32| {
-            let v = v as f64;
-            let d = 0.12;
-            if v.abs() < d { 0.0 } else { v.signum() * (v.abs() - d) / (1.0 - d) }
-        };
+        // Each thumbstick's dead zone (Settings › Controls › Gamepad), the rest
+        // of the travel rescaled so there is no step out of it.
+        let pm = &self.binds.pad;
+        let (dl, dr, dtrig) = (pm.dead(padmap::Thumb::Left), pm.dead(padmap::Thumb::Right), pm.dead(padmap::Thumb::Triggers));
+        let dzl = |v: f32| padmap::centred(v as f64, dl);
+        let dzr = |v: f32| padmap::centred(v as f64, dr);
+        let dz = |s: padmap::Stick, v: f32| if s.thumb() == padmap::Thumb::Left { dzl(v) } else { dzr(v) };
         // The analogue triggers; on a pad left without a layout they come through as
         // bare Z axes, -1 at rest to +1 squeezed.
         let trig = |b: Button, z: Axis| match (pad.button_data(b), pad.axis_data(z)) {
@@ -3198,6 +3226,7 @@ impl Game {
             (None, Some(a)) => ((a.value() as f64 + 1.0) * 0.5).clamp(0.0, 1.0),
             _ => 0.0,
         };
+        let trig_dz = |b: Button, z: Axis| padmap::one_ended(trig(b, z), dtrig);
         let modifier = pad.is_pressed(Button::North);
         let flying = self.mode == Mode::Fly && !self.pause_open;
         // The globe itself is only on the start screen's Fly page; the main
@@ -3206,18 +3235,19 @@ impl Game {
         // The flying axes, wherever Settings › Controls › Gamepad has put them.
         let map = &self.binds.pad;
         let stick = |s: padmap::Stick| match s {
-            padmap::Stick::LX => dz(pad.value(Axis::LeftStickX)),
-            padmap::Stick::LY => dz(pad.value(Axis::LeftStickY)),
-            padmap::Stick::RX => dz(pad.value(Axis::RightStickX)),
-            padmap::Stick::RY => dz(pad.value(Axis::RightStickY)),
-            padmap::Stick::Trig => (trig(Button::RightTrigger2, Axis::RightZ) - trig(Button::LeftTrigger2, Axis::LeftZ)).clamp(-1.0, 1.0),
+            padmap::Stick::LX => dz(s, pad.value(Axis::LeftStickX)),
+            padmap::Stick::LY => dz(s, pad.value(Axis::LeftStickY)),
+            padmap::Stick::RX => dz(s, pad.value(Axis::RightStickX)),
+            padmap::Stick::RY => dz(s, pad.value(Axis::RightStickY)),
+            padmap::Stick::Trig => (trig_dz(Button::RightTrigger2, Axis::RightZ) - trig_dz(Button::LeftTrigger2, Axis::LeftZ)).clamp(-1.0, 1.0),
         };
         let axis = |a: padmap::PadAxis| map.axis(a).map(|s| stick(s.stick) * s.sign as f64).unwrap_or(0.0);
         self.pad = Controls { pitch: axis(padmap::PadAxis::Pitch), roll: axis(padmap::PadAxis::Roll), yaw: axis(padmap::PadAxis::Rudder), throttle: axis(padmap::PadAxis::Throttle), ..Controls::default() };
         let (look_x, look_y) = (axis(padmap::PadAxis::LookX), axis(padmap::PadAxis::LookY));
         // The buttons held now, for the flying actions held with them.
         let down: Vec<padmap::PadBtn> = padmap::PadBtn::ALL.into_iter().filter(|b| pad.is_pressed(b.gilrs())).collect();
-        let ry = dz(pad.value(Axis::RightStickY));
+        let ry = dzr(pad.value(Axis::RightStickY));
+        let right = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
 
         // Moving about the menus: the d-pad (and the left stick too, except
         // where it turns the globe or flies), repeating while held.
@@ -3252,7 +3282,29 @@ impl Game {
             }
         }
         for k in nav_keys {
-            self.pad_key(k);
+            if self.radial.open {
+                // The flight menu is a ring: the d-pad goes round it.
+                let n = flightui::RADIAL_N;
+                let back = matches!(k, egui::Key::ArrowLeft | egui::Key::ArrowUp);
+                self.radial.pad = Some(match self.radial.pad {
+                    None => 0,
+                    Some(i) if back => (i + n - 1) % n,
+                    Some(i) => (i + 1) % n,
+                });
+            } else {
+                self.pad_key(k);
+            }
+        }
+        // The right stick points straight at a flight menu item.
+        if self.radial.open {
+            let (rx, ry) = right;
+            if rx.hypot(ry) > 0.5 {
+                let n = flightui::RADIAL_N;
+                let step = std::f32::consts::TAU / n as f32;
+                // Clockwise from the top, as the ring is laid out.
+                let a = rx.atan2(ry).rem_euclid(std::f32::consts::TAU);
+                self.radial.pad = Some((a / step).round() as usize % n);
+            }
         }
         // The right stick scrolls the menus and the flight panel: squared,
         // for slow reading near the centre, fast at full tilt.
@@ -3261,7 +3313,7 @@ impl Game {
             // Left stick turns the globe (squared, for a fine touch), the triggers zoom.
             let h = self.window.inner_size().height.max(1) as f64;
             let sq = |v: f64| v * v.abs();
-            let (sx, sy) = (sq(dz(lx)), sq(dz(ly)));
+            let (sx, sy) = (sq(dzl(lx)), sq(dzl(ly)));
             if sx != 0.0 || sy != 0.0 {
                 let k = 0.8 * h * dt;
                 self.menu.drag(-sx * k, sy * k, h, 60f64.to_radians());
@@ -4189,6 +4241,7 @@ impl Game {
             (Nav::Pause, _) => {}
             // The flight panel, open beside the flying: the same, and B closes it.
             // (Its other buttons, and Y with any, still fly: pad_fly_buttons.)
+            (Nav::Panel, Button::South) if !modifier && self.radial.open => self.radial.pick = true,
             (Nav::Panel, Button::South) if !modifier => self.pad_key(egui::Key::Enter),
             (Nav::Panel, Button::East) if !modifier && self.radial.open => self.radial.open = false,
             (Nav::Panel, Button::East) if !modifier => self.info_open = false,
@@ -6705,9 +6758,29 @@ impl Game {
         if !in_menu {
             self.lightning.segments(cam, dt, &mut bolts);
         }
+        if !in_menu && self.gfx.contrails {
+            let apt_air: Vec<(u32, u32, u8, DVec3, DVec3)> = self
+                .world
+                .air_targets(cam)
+                .into_iter()
+                .filter_map(|t| match t.key {
+                    weapons::TargetKey::Airport { apt, mover } => Some((apt, mover, t.size, t.pos, t.vel)),
+                    _ => None,
+                })
+                .collect();
+            self.contrails.step(dt, cam, &self.wx, self.doy, Some((&self.plane, !self.crashed)), &self.live.planes, &apt_air, &self.mp_players);
+            self.contrails.build_draw(cam, vp, &mut self.contrail_draw);
+        } else {
+            if !self.gfx.contrails && self.contrails.trail_count() > 0 {
+                self.contrails.clear();
+            }
+            self.contrail_draw.nodes.clear();
+            self.contrail_draw.segs.clear();
+        }
+        crate::gputime::cpu("sim.contrails");
         let rain_drops = if in_menu || (self.cam_rain < 0.002 && self.cam_blow < 0.01) { 0 } else { render::RAIN_DROPS };
         crate::gputime::cpu("shore+fields+misc");
-        self.r.render(Frame { rain_drops, bolts, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
+        self.r.render(Frame { rain_drops, bolts, contrails: &self.contrail_draw, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
         self.finish_mcp_shots();
         if (had_shots && std::env::args().any(|a| a == "--shot") && self.record.is_none()) || rec_done {
             self.quit = true;
@@ -7322,7 +7395,7 @@ impl Game {
         if g.dynamic && self.gfx_applied.is_some_and(|a| a.dynamic) {
             log::info!("dynamic quality: step {}/{} ({:.1} ms), {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, city {}, trees {}, AO {}, water {}", self.dynq.down, self.dynq.depth(), self.dynq.ema, g.render_scale() * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.city.name(), g.trees.name(), g.ao, g.water.name());
         } else if self.gfx_applied.is_some() {
-            log::info!("graphics: {} at {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, terrain {}, scenery {}, city {}, trees {}, traffic {}, AO {}, water {}, MSAA {}x", g.matches().map(graphics::Preset::name).unwrap_or("custom"), g.scale * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.terrain.name(), g.scenery.name(), g.city.name(), g.trees.name(), g.cars.name(), g.ao, g.water.name(), g.msaa);
+            log::info!("graphics: {} at {:.0}%, shadows {}, clouds {} (shadows {}), storms {}, contrails {}, terrain {}, scenery {}, city {}, trees {}, traffic {}, AO {}, water {}, MSAA {}x", g.matches().map(graphics::Preset::name).unwrap_or("custom"), g.scale * 100.0, g.shadows.name(), g.clouds.name(), g.cloud_shadows, g.storms.name(), g.contrails, g.terrain.name(), g.scenery.name(), g.city.name(), g.trees.name(), g.cars.name(), g.ao, g.water.name(), g.msaa);
         }
         self.gfx_applied = Some(g);
     }
@@ -8823,6 +8896,23 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
 
 /// The xpad driver's Xbox layout, in SDL's game controller mapping format.
 const XBOX_LAYOUT: &str = "a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,";
+
+/// A pad's sticks and triggers now, before any dead zone (`padmap::Live`).
+fn pad_live(pad: &gilrs::Gamepad) -> padmap::Live {
+    use gilrs::{Axis, Button};
+    // (a pad left without a layout has its triggers as bare Z axes, -1 at rest)
+    let trig = |b: Button, z: Axis| match (pad.button_data(b), pad.axis_data(z)) {
+        (Some(d), _) => d.value(),
+        (None, Some(a)) => ((a.value() + 1.0) * 0.5).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    padmap::Live {
+        ls: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
+        rs: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
+        lt: trig(Button::LeftTrigger2, Axis::LeftZ),
+        rt: trig(Button::RightTrigger2, Axis::RightZ),
+    }
+}
 
 /// An Xbox pad gilrs found no mapping for: a firmware newer than its copy of
 /// the SDL controller database, say. Left so, its triggers show up as bare
