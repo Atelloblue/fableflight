@@ -67,6 +67,7 @@ mod render;
 mod single_sample;
 mod stroke_font;
 mod roads;
+mod scenery;
 mod skin;
 mod sources;
 mod traffic;
@@ -421,7 +422,7 @@ struct Args {
     mcp_port: u16,
 }
 
-const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--contrails | --no-contrails] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
+const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--contrails | --no-contrails] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--no-scenery] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
 
 fn parse_args() -> Args {
     let v: Vec<String> = std::env::args().skip(1).collect();
@@ -926,6 +927,11 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
                 a.no_hud = true;
                 used = 1;
             }
+            // Without the hand-made airport scenery: the airfields as the game builds them.
+            "--no-scenery" => {
+                scenery::DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                used = 1;
+            }
             "--still" => {
                 // (read by `still_mode`): --shot pictures cut the aircraft out
                 // on a transparent background, for the aircraft picker
@@ -1400,6 +1406,8 @@ struct Game {
     name_rx: Option<std::sync::mpsc::Receiver<String>>,
     last_click: f64,
     n_cars: usize,
+    /// hand-made scenery objects drawn last frame (for the credits)
+    n_scenery: usize,
     skyglow: skyglow::SkyGlow,
     /// today's real snow cover around the camera (snowmap.rs)
     snowmap: snowmap::SnowMap,
@@ -1666,6 +1674,7 @@ impl Game {
         debug_assert_eq!(solids.len() as u32, birds::BASE);
         solids.extend(birds::models().meshes.iter().cloned());
         r.set_inst_meshes(&solids);
+        r.set_scenery(scenery::packs());
         let mut menu = menu::Menu::new(lat, lon, args.hour);
         menu.fuel = args.fuel.unwrap_or(menu.fuel);
         menu.cold = args.cold;
@@ -1790,7 +1799,7 @@ impl Game {
             g_slow: 1.0, last_bump: 0.0, was_ground: false, prev_vs: 0.0, prev_gear: plane.gear, prev_flaps: plane.flaps, quit: false,
             mode: if args.menu.unwrap_or(true) { Mode::Menu } else { Mode::Fly }, menu, menu_go: args.menu_go, heading: args.heading.to_radians(), destr: destruct::Destruction::new(secs.to_bits()),
             sheds: damage::Sheds::default(), fx_anchor: plane.pos, fx_shift: DVec3::ZERO, smoke_acc: 0.0, flash: Vec::new(), airport_note: (String::new(), -100.0), weapon_flash: None, kills: Vec::new(), damage_spec: args.damage.clone(), wreck_dirty: false, wreck_t: 0.0, wreck_seen: 0.0,
-            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, contrails: contrails::Contrails::new(), contrail_draw: contrails::DrawData::default(), bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, city_adapt: 0.0, city_probe: None, plane, weapons,
+            start_rx: None, loading: None, name_rx: None, last_click: -10.0, n_cars: 0, n_scenery: 0, skyglow: Default::default(), snowmap: Default::default(), snowtrack: Default::default(), birds: birds::Birds::with_flocks(args.flocks.clone()), birds_level: args.birds, contrails: contrails::Contrails::new(), contrail_draw: contrails::DrawData::default(), bird_insts: 0, bird_shape: ("", birds::Shape::default()), gauges: gauges::Gauges::new(&plane, secs.to_bits()), glass, lightning, rain_field: storm::RainField::default(), cam_rain: 0.0, cam_hail: 0.0, snow_field: storm::RainField::default(), cam_snow: start_snow, cam_blow: 0.0, fresh: snow::Fresh::default(), fresh_line: 0.0, storm_adapt: 0.0, city_adapt: 0.0, city_probe: None, plane, weapons,
             airport_rx: None, hold_spot: None, bench: args.bench.map(Bench::new),
             prefs_lang: args.lang.or(prefs.lang),
             prefs_t: 0.0,
@@ -6406,6 +6415,7 @@ impl Game {
             lite: [self.gfx_eff.water_detail(), if self.gfx_eff.clouds_on() { 1.0 } else { 0.0 }, 0.0, 0.0],
             det_mean: [[1.0 / 0.35, 1.0 / 0.35, 1.0 / 0.35, 1.0]; 16],
             det_hmean: [[0.5; 4]; 4],
+            flood: [[0.0; 4]; 16],
         };
         if !in_menu {
             let cells = self.wx.storm_cells(cam);
@@ -6639,6 +6649,7 @@ impl Game {
         }
         crate::gputime::cpu("frame_constants+aircraft_objects");
         let mut insts = Vec::new();
+        let mut scenery = Vec::new();
         let mut fall = Vec::new();
         let mut air_lights = own_lights;
         if !in_menu {
@@ -6649,11 +6660,17 @@ impl Game {
             self.destr.instances(cam, &mut insts, &mut fall);
             self.destr.skin_frame(cam);
             self.destr.upload_skins(&self.r);
-            self.world.airport_instances(cam, self.wx.wind_from as f32, (self.wx.wind * 1.94384) as f32, self.time, &mut insts, &mut air_lights);
+            self.world.airport_instances(cam, (self.wx.wind_from as f32, (self.wx.wind * 1.94384) as f32), self.time, &mut insts, &mut scenery, &mut air_lights);
             let world = &self.world;
             let before = insts.len();
             self.birds.instances(cam, 2.0 * (fov as f64 * 0.5).tan() / h as f64, &|rel, r| world.in_view(rel, r), &mut insts);
             self.bird_insts = insts.len() - before;
+            self.n_scenery = scenery.len();
+            // The apron floodlights are on from dusk to dawn.
+            let on = 1.0 - ((sun_up as f32 + 0.08) / 0.18).clamp(0.0, 1.0);
+            if on > 0.0 {
+                self.world.flood_globals(cam, on, &mut g.flood);
+            }
             self.world.photo_beacons(cam, &mut air_lights);
         }
         crate::gputime::cpu("instances(cars,airport,birds)");
@@ -6739,7 +6756,7 @@ impl Game {
         let mut shot = match self.shots.first() {
             Some((t, _, _)) if self.real >= *t => {
                 // Logged with each scripted shot, for comparing builds.
-                log::info!("fps {:.1}  rain {:.2} (glass {:.2}, wet {:.2}, hail {:.2})  sigma {:.2} draft {:.1}  birds {} in {} flocks ({} drawn, nearest {:.0} m)", self.fps, self.cam_rain, self.wx.rain, self.glass.wet, self.cam_hail, self.plane.air.sigma_w, self.plane.air.draft, self.birds.count(), self.birds.flocks.len(), self.bird_insts, self.birds.nearest(self.prev_cam));
+                log::info!("fps {:.1}  rain {:.2} (glass {:.2}, wet {:.2}, hail {:.2})  sigma {:.2} draft {:.1}  birds {} in {} flocks ({} drawn, nearest {:.0} m)  scenery {}", self.fps, self.cam_rain, self.wx.rain, self.glass.wet, self.cam_hail, self.plane.air.sigma_w, self.plane.air.draft, self.birds.count(), self.birds.flocks.len(), self.bird_insts, self.birds.nearest(self.prev_cam), scenery.len());
                 Some(self.shots.remove(0).1)
             }
             _ => None,
@@ -6795,7 +6812,7 @@ impl Game {
         crate::gputime::cpu("sim.contrails");
         let rain_drops = if in_menu || (self.cam_rain < 0.002 && self.cam_blow < 0.01) { 0 } else { render::RAIN_DROPS };
         crate::gputime::cpu("shore+fields+misc");
-        self.r.render(Frame { rain_drops, bolts, contrails: &self.contrail_draw, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
+        self.r.render(Frame { rain_drops, bolts, contrails: &self.contrail_draw, g, tiles, tess, details, photo, skins, skin_slots, fields, lights: air_lights, objs, insts, scenery, fall, near, casc_vp, shore: sf.step, shore_c, shore_tiles, psim, sim_steps: dt > 0.0, fluid, ocean: self.world.water_in_view().then(|| self.world.ocean.uniform()), egui: Some(ui), shot, cover, glow: glow_px, snow: snow_px, snow_tracks: snow_tr_uploads });
         self.finish_mcp_shots();
         if (had_shots && std::env::args().any(|a| a == "--shot") && self.record.is_none()) || rec_done {
             self.quit = true;
@@ -7331,6 +7348,11 @@ impl Game {
         }
         if self.mode != Mode::Menu && self.snow == snow::Mode::Auto && self.snowmap.shown().is_some() {
             live += t!("game.snow_cover_ims_u_s");
+        }
+        // The hand-made Antwerp scenery is built on Flemish open data (Modellicentie
+        // voor gratis hergebruik: GRB footprints, DHMV II heights, the 2025 orthophoto).
+        if self.mode != Mode::Menu && self.n_scenery > 0 {
+            live += "  ·  EBAW: Bron: GRB, DHMV II, Luchtopnamen Digitaal Vlaanderen";
         }
         if self.mode == Mode::Menu && self.gclouds.shown {
             live += t!("game.clouds_live_cloud_maps_matt");
