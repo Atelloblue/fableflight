@@ -61,6 +61,12 @@ struct BTile {
     /// distance scale of its tallest height class (buildings::HCLASS)
     tall: f32,
 }
+/// How far from the camera a floodlight still lights the ground (m).
+const FLOOD_REACH: f64 = 3000.0;
+/// A mast's floodlights: about 1e5 cd on the beam's axis (Globals units, as
+/// the landing lights: cd / 1e4 / pi, times 60), and the beam's half-angle.
+const FLOOD_I: f32 = 1.0e5 / 1.0e4 / std::f32::consts::PI * 60.0;
+const FLOOD_COS: f32 = 0.42;
 /// An airfield near enough to be drawn and to be busy.
 pub struct Field {
     pub geo: std::sync::Arc<crate::airports::Geo>,
@@ -69,6 +75,8 @@ pub struct Field {
     socks: Vec<Vec3>,
     /// a hand-made scenery pack's objects (scenery.rs)
     scenery: Vec<crate::scenery::Placed>,
+    /// floodlights that light the ground: lamp (relative to `geo.center`), beam direction
+    floods: Vec<(Vec3, Vec3)>,
     pub traffic: crate::traffic::Traffic,
     last_used: u64,
 }
@@ -946,7 +954,7 @@ impl World {
                             let gpu = r.upload_field(&mesh);
                             let traffic = crate::traffic::Traffic::new(&geo, i.wrapping_mul(2654435761) ^ 0x5bd1e995);
                             log::info!("airfield {} ready: {} runways, {} stands, {} lights", geo.apt().ident, geo.runways.len(), geo.stands.len(), mesh.lights.len());
-                            self.fields.insert(i, FSlot::Ready(Box::new(Field { geo, gpu, props: mesh.props, socks: mesh.socks, scenery: mesh.scenery, traffic, last_used: self.frame })));
+                            self.fields.insert(i, FSlot::Ready(Box::new(Field { geo, gpu, props: mesh.props, socks: mesh.socks, scenery: mesh.scenery, floods: mesh.floods, traffic, last_used: self.frame })));
                         }
                         Err(e) => {
                             log::debug!("airfield {i} failed: {e}");
@@ -1204,6 +1212,29 @@ impl World {
     /// Fixed airport objects, parked and moving aircraft and their lights.
     /// `scenery` takes the hand-made scenery packs' objects (scenery.rs).
     /// `wind`: where it blows from (degrees) and how hard (knots).
+    /// The eight floodlights nearest the camera within 3 km, for Globals
+    /// `flood` (common.wgsl `flood_light`), `on` 0..1 as they come on at dusk.
+    pub fn flood_globals(&self, cam: DVec3, on: f32, out: &mut [[f32; 4]; 16]) {
+        let mut near: Vec<(f64, DVec3, Vec3)> = Vec::new();
+        for s in self.fields.values() {
+            let FSlot::Ready(f) = s else { continue };
+            for (p, d) in &f.floods {
+                let o = f.geo.center - cam + p.as_dvec3();
+                let r = o.length();
+                if r < FLOOD_REACH {
+                    near.push((r, o, *d));
+                }
+            }
+        }
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (k, (r, o, d)) in near.iter().take(out.len() / 2).enumerate() {
+            // fading out toward the edge of the reach, so none pops in or out
+            let fade = (((FLOOD_REACH - r) / 500.0) as f32).clamp(0.0, 1.0);
+            out[2 * k] = [o.x as f32, o.y as f32, o.z as f32, FLOOD_I * on * fade];
+            out[2 * k + 1] = [d.x, d.y, d.z, FLOOD_COS];
+        }
+    }
+
     pub fn airport_instances(&self, cam: DVec3, wind: (f32, f32), t: f64, out: &mut Vec<(u32, Inst)>, scenery: &mut Vec<(u32, Inst)>, lights: &mut Vec<crate::airfield::Light>) {
         let (wind_from, wind_kt) = wind;
         let fr = self.frustum.as_ref();

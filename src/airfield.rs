@@ -69,6 +69,9 @@ pub struct FieldMesh {
     pub doors: Vec<Option<Vec2>>,
     /// a hand-made scenery pack's objects, placed (scenery.rs)
     pub scenery: Vec<crate::scenery::Placed>,
+    /// floodlights that light the ground (common.wgsl `flood_light`): lamp
+    /// (relative to the airfield's centre), beam direction
+    pub floods: Vec<(Vec3, Vec3)>,
 }
 
 struct B<'a> {
@@ -251,7 +254,8 @@ pub fn build(g: &Geo) -> FieldMesh {
     let concrete_apron = concrete_field || apt.kind == 2;
     let any_paved = g.runways.iter().any(|r| r.paved);
     let lit_field = apt.kind >= 1 || g.runways.iter().any(|r| r.lighted);
-    let flood = if apt.kind >= 1 { 1.0 } else { 0.0 };
+    // An even glow over the aprons at night, unless a scenery pack's masts light them.
+    let flood = if apt.kind >= 1 && crate::scenery::for_airport(&apt.ident).is_none() { 1.0 } else { 0.0 };
 
     // ---- aprons: slabs laid along each apron's longest side
     for (ai, a) in g.aprons.iter().enumerate() {
@@ -469,6 +473,7 @@ pub fn build(g: &Geo) -> FieldMesh {
         b.m.scenery = pack.place(g);
         for (p, lift, d) in pack.flood_lights(g) {
             b.light(p, lift, 420.0, L_FLOOD, 2, d, -0.3, STEADY);
+            b.m.floods.push((g.rel(p, lift), g.dir3(d).normalize()));
         }
     }
     b.m

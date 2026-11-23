@@ -31,6 +31,13 @@ fn sc_world(p: vec3f, w: f32, m0: vec4f, m1: vec4f, m2: vec4f) -> vec3f {
   let v = vec4f(p, w);
   return vec3f(dot(m0, v), dot(m1, v), dot(m2, v));
 }
+// Three steady random numbers 0..1 for an integer cell.
+fn sc_hash(c: vec3i) -> vec3f {
+  var h = bitcast<vec3u>(c) * vec3u(1597334673u, 3812015801u, 2798796415u);
+  h = (h.x ^ h.y ^ h.z) * vec3u(1597334673u, 3812015801u, 2798796415u);
+  h ^= h >> vec3u(16u);
+  return vec3f(h & vec3u(0xffffu)) / 65535.0;
+}
 fn sc_layer(m: SMat) -> i32 { return i32(max(m.p.w, 0.0)); }
 
 @vertex fn vs(@location(0) pos: vec3f, @location(1) nrm: vec4f, @location(2) tan: vec4f, @location(8) uv: vec2f, @location(9) mat: u32,
@@ -107,6 +114,16 @@ fn sc_layer(m: SMat) -> i32 { return i32(max(m.p.w, 0.0)); }
   let night = 1.0 - smoothstep(-0.05, 0.12, dot(l.upn, G.sun_dir.xyz));
   if (m.emit.w > 0.0) {
     c += m.emit.rgb * min(m.emit.w, 60.0) * 0.02 * G.sun_dir.w * (0.1 + night);
+  }
+  // The rooms behind the glass: at night about half the windows show a lit
+  // room, each pane-sized cell of a facade (and each window instance, ext.y)
+  // on or off for good, some under warm lamps, some under office tubes.
+  if ((flags & 1u) != 0u && night > 0.0) {
+    let cell = vec3i(floor(in.L / vec3f(2.6, 2.6, 3.4))) + vec3i(i32(in.ext.y * 65536.0));
+    let h = sc_hash(cell);
+    let on = step(0.45, h.x);
+    let lamp = mix(vec3f(1.0, 0.72, 0.42), vec3f(0.95, 0.93, 0.88), step(0.65, h.y));
+    c += lamp * on * (0.5 + 0.5 * h.z) * 0.016 * G.sun_dir.w * night * (1.0 - ks);
   }
   return GOut(vec4f(c, 1.0), vec4f(N, -glass * 0.6), amb_share(c));
 }

@@ -5755,6 +5755,7 @@ impl Game {
             snow_tr_c: snow_tr[0],
             snow_tr_e: snow_tr[1],
             snow_tr_n: snow_tr[2],
+            flood: [[0.0; 4]; 16],
         };
         if !in_menu {
             let cells = self.wx.storm_cells(cam);
@@ -5993,6 +5994,11 @@ impl Game {
             self.destr.upload_skins(&self.r);
             self.world.airport_instances(cam, (self.wx.wind_from as f32, (self.wx.wind * 1.94384) as f32), self.time, &mut insts, &mut scenery, &mut air_lights);
             self.n_scenery = scenery.len();
+            // The apron floodlights are on from dusk to dawn.
+            let on = 1.0 - ((sun_up as f32 + 0.08) / 0.18).clamp(0.0, 1.0);
+            if on > 0.0 {
+                self.world.flood_globals(cam, on, &mut g.flood);
+            }
             self.world.photo_beacons(cam, &mut air_lights);
         }
         self.live.step(&self.src, (!in_menu).then_some(self.plane.pos));

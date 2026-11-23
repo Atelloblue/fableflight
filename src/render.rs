@@ -226,6 +226,10 @@ pub struct Globals {
     pub snow_tr_c: [f32; 4],
     pub snow_tr_e: [f32; 4],
     pub snow_tr_n: [f32; 4],
+    /// apron floodlights lighting the ground and what stands on it (common.wgsl
+    /// `flood_light`), eight, two each: camera-relative lamp + intensity (0 =
+    /// none, and none after it); beam direction + cosine of its half-angle
+    pub flood: [[f32; 4]; 16],
 }
 
 /// Raindrops drawn around the camera in rain (as many as the rain is heavy show).
