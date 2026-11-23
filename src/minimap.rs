@@ -18,6 +18,15 @@ struct MapTile {
     retry: Instant,
 }
 
+pub const DEST_COLOR: Color32 = Color32::from_rgb(255, 110, 90);
+
+#[derive(Clone, Debug)]
+pub struct Destination {
+    pub lat: f64,
+    pub lon: f64,
+    pub name: Option<String>,
+}
+
 pub struct Minimap {
     pub visible: bool,
     pub landing_guidance: bool,
@@ -37,6 +46,7 @@ pub struct Minimap {
     /// Where the full-size map is centred (Web Mercator, 0..1); None follows the aircraft.
     full_center: Option<glam::DVec2>,
     full_scroll: f32,
+    pub destination: Option<Destination>,
     maps: HashMap<TileId, MapTile>,
     map_pending: Vec<(TileId, mpsc::Receiver<Option<data::Data>>)>,
     heading: f64,
@@ -84,6 +94,45 @@ impl View {
     fn project(&self, x: f64, y: f64) -> Pos2 {
         self.rect.center() + rotate(Vec2::new((tile_offset(x * self.n, self.cx, self.n) * 256.0) as f32, ((y * self.n - self.cy) * 256.0) as f32), self.angle)
     }
+    /// a screen point back to (lat, lon) in radians.
+    fn unproject(&self, p: Pos2) -> (f64, f64) {
+        let v = rotate(p - self.rect.center(), -self.angle) / 256.0;
+        let mx = ((self.cx + v.x as f64) / self.n).rem_euclid(1.0);
+        let my = ((self.cy + v.y as f64) / self.n).clamp(geo::lat_to_merc_y(85f64.to_radians()), geo::lat_to_merc_y(-85f64.to_radians()));
+        (geo::merc_y_to_lat(my), mx * 2.0 * std::f64::consts::PI - std::f64::consts::PI)
+    }
+}
+
+fn sub_corners(c: [Pos2; 4], u0: f32, v0: f32, u1: f32, v1: f32) -> [Pos2; 4] {
+    let at = |u: f32, v: f32| {
+        let top = c[0].to_vec2() * (1.0 - u) + c[1].to_vec2() * u;
+        let bot = c[3].to_vec2() * (1.0 - u) + c[2].to_vec2() * u;
+        (top * (1.0 - v) + bot * v).to_pos2()
+    };
+    [at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)]
+}
+
+fn draw_quad(painter: &egui::Painter, tex_id: egui::TextureId, corners: [Pos2; 4], uv: [[f32; 2]; 4]) {
+    let mut mesh = egui::Mesh::with_texture(tex_id);
+    for (pos, uv) in corners.into_iter().zip(uv) {
+        mesh.vertices.push(egui::epaint::Vertex { pos, uv: Pos2::new(uv[0], uv[1]), color: Color32::WHITE });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    painter.add(mesh);
+}
+
+fn nearest_airport_name(lat: f64, lon: f64, view: &View, click: Pos2) -> Option<String> {
+    let db = crate::airports::Db::get();
+    db.near(lat.to_degrees(), lon.to_degrees(), 25_000.0)
+        .into_iter()
+        .filter_map(|(id, _)| {
+            let apt = &db.apts[id as usize];
+            let pos = view.project(geo::lon_to_merc_x(apt.lon.to_radians()).rem_euclid(1.0), geo::lat_to_merc_y(apt.lat.to_radians()));
+            let d = pos.distance(click);
+            (d <= 16.0).then_some((d, apt.ident.clone()))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, ident)| ident)
 }
 
 fn rotate(v: Vec2, angle: f64) -> Vec2 {
@@ -224,7 +273,7 @@ fn tile_offset(x: f64, center: f64, n: f64) -> f64 {
     (x - center + n * 0.5).rem_euclid(n) - n * 0.5
 }
 
-fn distance_label(meters: f64, lang: crate::i18n::Lang) -> String {
+pub(crate) fn distance_label(meters: f64, lang: crate::i18n::Lang) -> String {
     let text = if meters >= 1000.0 { format!("{:.1} km", meters / 1000.0) } else { format!("{meters:.0} m") };
     text.replace('.', lang.text("number.decimal_point"))
 }
@@ -291,6 +340,106 @@ impl Minimap {
         }
     }
 
+    fn draw_plan_tile(&mut self, painter: &egui::Painter, id: TileId, corners: [Pos2; 4]) -> bool {
+        let full_uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        if let Some(tile) = self.maps.get_mut(&id) {
+            tile.touched = self.frame;
+            if let Some(texture) = &tile.texture {
+                draw_quad(painter, texture.id(), corners, full_uv);
+                return true;
+            }
+        }
+        let mut drawn = false;
+        for az in (0..id.z).rev() {
+            let (a, u, v, s) = id.ancestor(az);
+            if let Some(tile) = self.maps.get_mut(&a) {
+                tile.touched = self.frame;
+                if let Some(texture) = &tile.texture {
+                    let uv = [[u as f32, v as f32], [(u + s) as f32, v as f32], [(u + s) as f32, (v + s) as f32], [u as f32, (v + s) as f32]];
+                    draw_quad(painter, texture.id(), corners, uv);
+                    drawn = true;
+                    break;
+                }
+            }
+        }
+        const QUADS: [(f32, f32, f32, f32); 4] = [(0.0, 0.0, 0.5, 0.5), (0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0), (0.5, 0.5, 1.0, 1.0)];
+        if id.z < 14 {
+            for (c1, (u0, v0, u1, v1)) in id.children().into_iter().zip(QUADS) {
+                let c1_corners = sub_corners(corners, u0, v0, u1, v1);
+                if let Some(tile) = self.maps.get_mut(&c1) {
+                    tile.touched = self.frame;
+                    if let Some(texture) = &tile.texture {
+                        draw_quad(painter, texture.id(), c1_corners, full_uv);
+                        drawn = true;
+                        continue;
+                    }
+                }
+                if c1.z < 14 {
+                    for (c2, (su0, sv0, su1, sv1)) in c1.children().into_iter().zip(QUADS) {
+                        if let Some(tile) = self.maps.get_mut(&c2) {
+                            tile.touched = self.frame;
+                            if let Some(texture) = &tile.texture {
+                                draw_quad(painter, texture.id(), sub_corners(c1_corners, su0, sv0, su1, sv1), full_uv);
+                                drawn = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        drawn
+    }
+
+    fn draw_imagery_tile(&mut self, painter: &egui::Painter, id: TileId, corners: [Pos2; 4]) -> bool {
+        let full_uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        if let Some(tile) = self.tiles.get_mut(&id) {
+            tile.touched = self.frame;
+            if let Some(texture) = &tile.texture {
+                draw_quad(painter, texture.id(), corners, full_uv);
+                return true;
+            }
+        }
+        let mut drawn = false;
+        for az in (0..id.z).rev() {
+            let (a, u, v, s) = id.ancestor(az);
+            if let Some(tile) = self.tiles.get_mut(&a) {
+                tile.touched = self.frame;
+                if let Some(texture) = &tile.texture {
+                    let uv = [[u as f32, v as f32], [(u + s) as f32, v as f32], [(u + s) as f32, (v + s) as f32], [u as f32, (v + s) as f32]];
+                    draw_quad(painter, texture.id(), corners, uv);
+                    drawn = true;
+                    break;
+                }
+            }
+        }
+        const QUADS: [(f32, f32, f32, f32); 4] = [(0.0, 0.0, 0.5, 0.5), (0.5, 0.0, 1.0, 0.5), (0.0, 0.5, 0.5, 1.0), (0.5, 0.5, 1.0, 1.0)];
+        if id.z < 17 {
+            for (c1, (u0, v0, u1, v1)) in id.children().into_iter().zip(QUADS) {
+                let c1_corners = sub_corners(corners, u0, v0, u1, v1);
+                if let Some(tile) = self.tiles.get_mut(&c1) {
+                    tile.touched = self.frame;
+                    if let Some(texture) = &tile.texture {
+                        draw_quad(painter, texture.id(), c1_corners, full_uv);
+                        drawn = true;
+                        continue;
+                    }
+                }
+                if c1.z < 17 {
+                    for (c2, (su0, sv0, su1, sv1)) in c1.children().into_iter().zip(QUADS) {
+                        if let Some(tile) = self.tiles.get_mut(&c2) {
+                            tile.touched = self.frame;
+                            if let Some(texture) = &tile.texture {
+                                draw_quad(painter, texture.id(), sub_corners(c1_corners, su0, sv0, su1, sv1), full_uv);
+                                drawn = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        drawn
+    }
+
     /// The road map's tiles (when it is shown) and the place names over either map.
     fn draw_map(&mut self, src: &Arc<Sources>, painter: &egui::Painter, view: &View, outline: &Outline, occupied: &mut Vec<egui::Rect>) -> usize {
         let rect = view.rect;
@@ -309,24 +458,23 @@ impl Minimap {
             let corners = [Vec2::ZERO, Vec2::X, Vec2::splat(1.0), Vec2::Y].map(|v| rect.center() + rotate((offset + v) * (256.0 * factor as f32), view.angle));
             if !egui::Rect::from_points(&corners).intersects(rect) { continue; }
             if !visible.contains(&id) { visible.push(id); }
-            wanted.push((dx * dx + dy * dy, id));
-            if let Some(tile) = self.maps.get_mut(&id) {
-                tile.touched = self.frame;
-                if self.plan {
-                    if let Some(texture) = &tile.texture {
-                        let mut mesh = egui::Mesh::with_texture(texture.id());
-                        for (pos, uv) in corners.into_iter().zip([[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,1.0]]) {
-                            mesh.vertices.push(egui::epaint::Vertex { pos, uv: Pos2::new(uv[0],uv[1]), color: Color32::WHITE });
-                        }
-                        mesh.indices.extend([0,1,2,0,2,3]);
-                        painter.add(mesh);
-                        drawn += 1;
-                    }
+            let d = dx * dx + dy * dy;
+            if self.plan {
+                wanted.push((0, d, id.ancestor(z.saturating_sub(2)).0));
+                wanted.push((1, d, id));
+                if self.draw_plan_tile(painter, id, corners) {
+                    drawn += 1;
+                }
+            } else {
+                wanted.push((1, d, id));
+                if let Some(tile) = self.maps.get_mut(&id) {
+                    tile.touched = self.frame;
                 }
             }
         } }
-        wanted.sort_by_key(|(d, _)| *d);
-        let mut wanted = wanted.into_iter().map(|(_, id)| id)
+        self.map_pending.retain(|(id, _)| id.z <= z);
+        wanted.sort_by_key(|(priority, d, _)| (*priority, *d));
+        let mut wanted = wanted.into_iter().map(|(_, _, id)| id)
             .filter(|id| self.maps.get(id).is_none_or(|t| t.texture.is_none() && Instant::now() >= t.retry));
         while self.map_pending.len() < view.loads {
             let Some(id) = wanted.find(|id| !self.map_pending.iter().any(|(p, _)| p == id)) else { break };
@@ -376,30 +524,17 @@ impl Minimap {
                 let corners = [Vec2::ZERO, Vec2::new(256.0, 0.0), Vec2::splat(256.0), Vec2::new(0.0, 256.0)]
                     .map(|v| rect.center() + rotate(offset + v, view.angle));
                 if !egui::Rect::from_points(&corners).intersects(rect) { continue; }
-                // Coarse coverage first, then detail; reuse ancestors while zooming.
+                // Coarse coverage first, then detail; reuse ancestors and descendants while zooming.
                 let coarse = id.ancestor(zoom.saturating_sub(2)).0;
                 let d = dx * dx + dy * dy;
                 wanted.push((0, d, coarse));
                 wanted.push((1, d, id));
-                for z in (0..=zoom).rev() {
-                    let (a, u, v, scale) = id.ancestor(z);
-                    if let Some(tile) = self.tiles.get_mut(&a) {
-                        tile.touched = self.frame;
-                        if let Some(texture) = &tile.texture {
-                            let mut mesh = egui::Mesh::with_texture(texture.id());
-                            let uv = [[u, v], [u + scale, v], [u + scale, v + scale], [u, v + scale]];
-                            for (pos, uv) in corners.into_iter().zip(uv) {
-                                mesh.vertices.push(egui::epaint::Vertex { pos, uv: Pos2::new(uv[0] as f32, uv[1] as f32), color: Color32::WHITE });
-                            }
-                            mesh.indices.extend([0, 1, 2, 0, 2, 3]);
-                            painter.add(mesh);
-                            drawn += 1;
-                            break;
-                        }
-                    }
+                if self.draw_imagery_tile(painter, id, corners) {
+                    drawn += 1;
                 }
             }
         }
+        self.pending.retain(|(id, _, _)| id.z <= zoom);
         wanted.sort_by_key(|(priority, d, _)| (*priority, *d));
         let mut wanted = wanted.into_iter().map(|(_, _, id)| id)
             .filter(|id| self.tiles.get(id).is_none_or(|t| t.texture.is_none() && Instant::now() >= t.retry));
@@ -442,8 +577,50 @@ impl Minimap {
                 else if if self.plan { !self.map_pending.is_empty() } else { !self.pending.is_empty() } { crate::t!("minimap.loading_map") }
                 else { crate::t!("minimap.imagery_unavailable") }, egui::FontId::proportional(12.0), Color32::WHITE);
         }
-        // the aircraft.
+        // the destination route & pin, if set.
         let at = view.project(geo::lon_to_merc_x(aircraft.1).rem_euclid(1.0), geo::lat_to_merc_y(aircraft.0));
+        if let Some(dest) = &self.destination {
+            let dp = view.project(geo::lon_to_merc_x(dest.lon).rem_euclid(1.0), geo::lat_to_merc_y(dest.lat));
+            painter.line_segment([at, dp], Stroke::new(4.0, Color32::from_black_alpha(130)));
+            painter.line_segment([at, dp], Stroke::new(1.8, DEST_COLOR.gamma_multiply(0.85)));
+            if outline.inside(dp) {
+                let r = 6.5;
+                let diamond = vec![dp + Vec2::new(0.0, -r), dp + Vec2::new(r, 0.0), dp + Vec2::new(0.0, r), dp + Vec2::new(-r, 0.0)];
+                painter.add(egui::Shape::convex_polygon(diamond.clone(), DEST_COLOR, Stroke::new(1.5, Color32::from_black_alpha(200))));
+                painter.circle_filled(dp, 2.0, Color32::WHITE);
+                if let Some(name) = &dest.name {
+                    let galley = painter.layout_no_wrap(name.clone(), crate::menu::semibold(11.0), Color32::WHITE);
+                    let lr = egui::Rect::from_center_size(dp - Vec2::new(0.0, galley.size().y * 0.5 + 11.0), galley.size() + Vec2::new(8.0, 4.0));
+                    if in_disc(lr, &outline, 4.0) {
+                        painter.rect_filled(lr, crate::menu::R_WIDGET, Color32::from_black_alpha(200));
+                        painter.galley(lr.min + Vec2::new(4.0, 2.0), galley, Color32::WHITE);
+                    }
+                }
+            } else {
+                // Off-edge indicator pointing toward the destination.
+                let dir = (dp - rect.center()).normalized();
+                if dir.length_sq() > 0.5 {
+                    let inset = rect.shrink(14.0);
+                    let mut t = f32::INFINITY;
+                    if dir.x.abs() > 1e-4 {
+                        let tx = if dir.x > 0.0 { (inset.right() - rect.center().x) / dir.x } else { (inset.left() - rect.center().x) / dir.x };
+                        t = t.min(tx);
+                    }
+                    if dir.y.abs() > 1e-4 {
+                        let ty = if dir.y > 0.0 { (inset.bottom() - rect.center().y) / dir.y } else { (inset.top() - rect.center().y) / dir.y };
+                        t = t.min(ty);
+                    }
+                    if t.is_finite() && t > 0.0 {
+                        let edge = rect.center() + dir * t;
+                        let side = Vec2::new(-dir.y, dir.x);
+                        let tip = edge + dir * 4.0;
+                        let tri = vec![tip, edge - dir * 5.0 + side * 5.0, edge - dir * 5.0 - side * 5.0];
+                        painter.add(egui::Shape::convex_polygon(tri, DEST_COLOR, Stroke::new(1.5, Color32::from_black_alpha(200))));
+                    }
+                }
+            }
+        }
+        // the aircraft.
         let arrow = [Vec2::new(0.0, -12.0), Vec2::new(8.5, 9.0), Vec2::new(0.0, 4.5), Vec2::new(-8.5, 9.0)];
         let points: Vec<_> = arrow.into_iter().map(|v| at + rotate(v, self.heading + view.angle)).collect();
         painter.add(egui::Shape::closed_line(points.clone(), Stroke::new(3.0, Color32::from_black_alpha(150))));
@@ -465,8 +642,20 @@ impl Minimap {
 
     pub fn new(prefs: &crate::settings::Settings) -> Self {
         Self { visible: prefs.minimap, landing_guidance: prefs.landing_guidance, heading_up: prefs.minimap_heading_up, zoom: prefs.minimap_zoom,
-            size: Vec2::splat(prefs.minimap_size), bottom: 65.0, top: 0.0, resize_start: 0.0, full: false, full_zoom: prefs.minimap_zoom.saturating_sub(2).max(3), full_center: None, full_scroll: 0.0,
+            size: Vec2::splat(prefs.minimap_size), bottom: 65.0, top: 0.0, resize_start: 0.0, full: false, full_zoom: prefs.minimap_zoom.saturating_sub(2).max(3), full_center: None, full_scroll: 0.0, destination: None,
             plan: prefs.minimap_plan, maps: HashMap::new(), map_pending: Vec::new(), heading: 0.0, scroll: 0.0, tiles: HashMap::new(), pending: Vec::new(), generation: 0, frame: 0, runway_airports: Vec::new(), runway_center: None, runway_reach: 0.0 }
+    }
+
+    pub fn set_destination(&mut self, lat: f64, lon: f64, name: Option<String>) {
+        self.destination = Some(Destination { lat, lon, name });
+    }
+
+    pub fn clear_destination(&mut self) {
+        self.destination = None;
+    }
+
+    pub fn destination(&self) -> Option<&Destination> {
+        self.destination.as_ref()
     }
 
     /// Opens or closes the full-size map; it opens on the aircraft.
@@ -492,7 +681,7 @@ impl Minimap {
             self.maps.insert(id, MapTile { texture, places, touched: frame, retry: Instant::now() + Duration::from_secs(30) });
         }
         // (the full-size map shows many more tiles at once)
-        let (max_maps, max_tiles) = if self.full { (96, 192) } else { (32, 64) };
+        let (max_maps, max_tiles) = if self.full { (128, 256) } else { (48, 96) };
         while self.maps.len() > max_maps {
             let oldest = *self.maps.iter().min_by_key(|(_, t)| t.touched).unwrap().0;
             self.maps.remove(&oldest);
@@ -563,7 +752,16 @@ impl Minimap {
                 let painter = ui.painter_at(rect);
                 let angle = if self.heading_up { -self.heading } else { 0.0 };
                 let n = (1u32 << self.zoom) as f64;
-                let view = View { rect, zoom: self.zoom, n, cx: geo::lon_to_merc_x(lon).rem_euclid(1.0) * n, cy: geo::lat_to_merc_y(lat) * n, angle, lat, lon, names: 8, loads: 2 };
+                let view = View { rect, zoom: self.zoom, n, cx: geo::lon_to_merc_x(lon).rem_euclid(1.0) * n, cy: geo::lat_to_merc_y(lat) * n, angle, lat, lon, names: 8, loads: 4 };
+                if response.secondary_clicked() && over_disc {
+                    self.clear_destination();
+                } else if response.clicked() && over_disc {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        let (dlat, dlon) = view.unproject(p);
+                        let name = nearest_airport_name(dlat, dlon, &view, p);
+                        self.set_destination(dlat, dlon, name);
+                    }
+                }
                 self.paint(ctx, src, &painter, &view, (lat, lon), guide, world, reserved(rect, angle));
                 // north on a chip.
                 let north = center + rotate(Vec2::new(0.0, -(radius - 18.0)), angle);
@@ -648,7 +846,16 @@ impl Minimap {
             center.y = center.y.clamp(geo::lat_to_merc_y(85f64.to_radians()), geo::lat_to_merc_y(-85f64.to_radians()));
             if self.full_center.is_some() { self.full_center = Some(center); }
             let n = (1u32 << zoom) as f64;
-            let view = View { rect, zoom, n, cx: center.x * n, cy: center.y * n, angle: 0.0, lat: geo::merc_y_to_lat(center.y), lon: center.x * 2.0 * std::f64::consts::PI - std::f64::consts::PI, names: 40, loads: 6 };
+            let view = View { rect, zoom, n, cx: center.x * n, cy: center.y * n, angle: 0.0, lat: geo::merc_y_to_lat(center.y), lon: center.x * 2.0 * std::f64::consts::PI - std::f64::consts::PI, names: 40, loads: 8 };
+            if response.secondary_clicked() {
+                self.clear_destination();
+            } else if response.clicked() {
+                if let Some(p) = response.interact_pointer_pos() {
+                    let (dlat, dlon) = view.unproject(p);
+                    let name = nearest_airport_name(dlat, dlon, &view, p);
+                    self.set_destination(dlat, dlon, name);
+                }
+            }
             let painter = ui.painter_at(rect);
             // the toolbar, the hint and the aircraft keep names off them.
             let bar = egui::Rect::from_min_max(Pos2::new(rect.right() - 260.0, rect.top()), Pos2::new(rect.right(), rect.top() + 56.0));
@@ -711,6 +918,14 @@ impl Minimap {
             }) {
                 self.full_center = None;
             }
+            if self.destination.is_some() && button(ui, &mut x, 32.0, "clear_dest", crate::t!("minimap.clear_destination"), &|p, r, c| {
+                let m = r.center();
+                let s = 6.0;
+                p.add(egui::Shape::closed_line(vec![m + Vec2::new(0.0, -s), m + Vec2::new(s, 0.0), m + Vec2::new(0.0, s), m + Vec2::new(-s, 0.0)], stroke(DEST_COLOR)));
+                p.line_segment([m + Vec2::new(-4.5, -4.5), m + Vec2::new(4.5, 4.5)], stroke(c));
+            }) {
+                self.clear_destination();
+            }
             self.full_zoom = zoom;
             // north is up.
             let north = Pos2::new(rect.right() - 30.0, rect.top() + 76.0);
@@ -769,5 +984,17 @@ mod tests {
     fn antimeridian_uses_nearest_copy() {
         assert!((tile_offset(0.0, 255.75, 256.0) - 0.25).abs() < 1e-8);
         assert!((tile_offset(255.0, 0.25, 256.0) + 1.25).abs() < 1e-8);
+    }
+    #[test]
+    fn unproject_inverts_project_with_rotation() {
+        let rect = egui::Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::splat(300.0));
+        let (lat, lon) = (48.8566_f64.to_radians(), 2.3522_f64.to_radians());
+        let n = (1u32 << 10) as f64;
+        let view = View { rect, zoom: 10, n, cx: geo::lon_to_merc_x(lon) * n, cy: geo::lat_to_merc_y(lat) * n, angle: -0.7, lat, lon, names: 8, loads: 4 };
+        let (tlat, tlon) = (48.92_f64.to_radians(), 2.45_f64.to_radians());
+        let p = view.project(geo::lon_to_merc_x(tlon).rem_euclid(1.0), geo::lat_to_merc_y(tlat));
+        let (ulat, ulon) = view.unproject(p);
+        assert!((ulat - tlat).abs() < 1e-4);
+        assert!((ulon - tlon).abs() < 1e-4);
     }
 }

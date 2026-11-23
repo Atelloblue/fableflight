@@ -7935,6 +7935,34 @@ impl Game {
                     }
                 }
             }
+            // The map destination: a diamond and tag in the HUD, like live traffic.
+            if let (true, Some((vp, cam)), Some(dest)) = (self.hud_on(), self.live_view, self.minimap.destination()) {
+                let screen = ctx.content_rect();
+                let dest_pos = geo::lla_to_pos(dest.lat, dest.lon, 0.0);
+                let rel = dest_pos - cam;
+                let d = rel.length();
+                let c = vp * rel.as_vec3().extend(1.0);
+                if c.w > 0.0 {
+                    let at = egui::pos2(screen.left() + (c.x / c.w * 0.5 + 0.5) * screen.width(), screen.top() + (0.5 - c.y / c.w * 0.5) * screen.height());
+                    if screen.expand(40.0).contains(at) {
+                        let painter = ctx.layer_painter(egui::LayerId::background());
+                        let col = minimap::DEST_COLOR;
+                        let r = 6.0;
+                        let diamond = vec![at + egui::vec2(0.0, -r), at + egui::vec2(r, 0.0), at + egui::vec2(0.0, r), at + egui::vec2(-r, 0.0)];
+                        painter.add(egui::Shape::closed_line(diamond, egui::Stroke::new(1.8, col)));
+                        painter.circle_filled(at, 2.0, col);
+                        let title = dest.name.as_deref().unwrap_or(t!("minimap.destination"));
+                        let brg = rel.dot(e).atan2(rel.dot(n)).to_degrees().rem_euclid(360.0);
+                        let line2 = format!("{}  ·  {:03.0}°", minimap::distance_label(d, i18n::lang()), brg);
+                        let shade = Color32::from_black_alpha(200);
+                        for (k, (s, f, col)) in [(title, menu::semibold(11.5), Color32::WHITE), (line2.as_str(), menu::medium(10.0), flightui::SOFT)].into_iter().enumerate() {
+                            let pos = at + egui::vec2(10.0, -12.0 + 13.0 * k as f32);
+                            painter.text(pos + egui::vec2(1.0, 1.0), Align2::LEFT_TOP, s, f.clone(), shade);
+                            painter.text(pos, Align2::LEFT_TOP, s, f, col);
+                        }
+                    }
+                }
+            }
             // The seeker's target: a diamond on the aircraft, and its range.
             if let (true, Some((vp, cam))) = (self.hud_on(), self.live_view) {
                 if let Some(t) = &self.weapons.target_view {
