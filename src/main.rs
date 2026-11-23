@@ -1267,6 +1267,8 @@ struct Game {
     /// the pad was used last, not the mouse: the middle of the cockpit view
     /// picks out the controls (see `pad_aim_at`)
     pad_aim: bool,
+    /// the pad's sticks as read now, for the dead zone boxes in Settings (None: no pad)
+    pad_live: Option<padmap::Live>,
     /// the camera look the view starts out at (right stick click goes back to it)
     cam_home: (f64, f64),
     rng: crash::Rng,
@@ -1741,7 +1743,7 @@ impl Game {
             cam_yaw: cy.to_radians(), cam_pitch: cp, cam_dist: cd, cam_mode: args.start_view.unwrap_or(prefs.cam_mode), view_before_tail: 0, cam_pos, cam_dir: -plane.forward(), cam_look: plane.pos, orbit: 0.0, cam_rise: 0.0, cam_clear_t: 0.0, cam_ang: None, cam_hold: 0.0,
             utc: (args.hour - lon / 15.0).rem_euclid(24.0), doy: args.day.unwrap_or(doy), wx, time: 0.0, real: 0.0, last: Instant::now(), acc: 0.0, wave_off: DVec2::ZERO, shore: shore::Shore::default(), ocean_off: DVec2::ZERO, prev_cam: cam_pos, prev_vp: [[0.0; 4]; 4], gfx, gfx_applied: None, prev_plane: Mat4::IDENTITY, plane_box, lamps,
             frame: 0, fps: 60.0, fps_log: (args.fps_log, Instant::now(), 0, 0.0), paused: false, show_help: false, show_hud: !args.no_hud && prefs.show_hud, hud_cockpit: prefs.hud_cockpit, path_marker: prefs.path_marker, arcade: args.arcade || prefs.arcade, goto_open: false, goto_text: String::new(), goto_rx: None,
-            status, status_until: 8.0, shots: args.shots.clone(), crash_at: args.crash_at, boost_at: args.boost_at, stage_at: args.stage_at, engines: args.engines, hold: args.hold, gilrs: open_gamepads(), pad: Controls::default(), pad_id: None, pad_fixed: Vec::new(), pad_events: Vec::new(), pad_move: None, pad_skip: None, pad_rep: None, pad_home: false, pad_y: false, pad_y_combo: false, pad_held: Vec::new(), pad_note: (String::new(), 0.0), pad_aim: false, ap: autopilot::Autopilot::default(), ap_off_t: -100.0, ap_script: args.ap_script.clone(), cam_home: (cy.to_radians(), cp), rng: crash::Rng(secs.to_bits() | 1),
+            status, status_until: 8.0, shots: args.shots.clone(), crash_at: args.crash_at, boost_at: args.boost_at, stage_at: args.stage_at, engines: args.engines, hold: args.hold, gilrs: open_gamepads(), pad: Controls::default(), pad_id: None, pad_fixed: Vec::new(), pad_events: Vec::new(), pad_move: None, pad_skip: None, pad_rep: None, pad_home: false, pad_y: false, pad_y_combo: false, pad_held: Vec::new(), pad_note: (String::new(), 0.0), pad_aim: false, pad_live: None, ap: autopilot::Autopilot::default(), ap_off_t: -100.0, ap_script: args.ap_script.clone(), cam_home: (cy.to_radians(), cp), rng: crash::Rng(secs.to_bits() | 1),
             audio: if args.record.is_some() { Some(audio::Audio::offline()) } else if args.mute { None } else { audio::Audio::new() },
             record: args.record.clone(), rec_audio: Vec::new(), rec_n: 0, rec_t0: Instant::now(), sound_on: prefs.sound_on, volume: prefs.volume, snow: args.snow.unwrap_or(prefs.snow), info_open: args.weather_panel, radial: Default::default(), info_page: if args.weather_panel { menu::Page::Weather } else { menu::Page::Flight }, pause_open: false, pause_page: menu::Page::Game, pause_at: args.pause_menu, radial_at: args.flight_menu, settings_sec: args.settings.unwrap_or(settings_ui::Section::General), look_sens: prefs.look_sens, head: cockpit::Head::new(cy.to_radians(), cp), cockpit_fov: args.fov.unwrap_or(prefs.cockpit_fov).clamp(30.0, 90.0), head_live: false, warn: audio::Warn::default(), warn_t: [-10.0; 4],
             g_slow: 1.0, last_bump: 0.0, was_ground: false, prev_vs: 0.0, prev_gear: plane.gear, prev_flaps: plane.flaps, quit: false,
@@ -3094,6 +3096,7 @@ impl Game {
         let id = self.pad_id.filter(|id| g.connected_gamepad(*id).is_some_and(|p| free(&p))).or_else(|| g.gamepads().find(|(_, p)| free(p)).map(|(id, _)| id));
         let Some(pad) = id.and_then(|id| g.connected_gamepad(id)) else {
             self.pad = Controls::default();
+            self.pad_live = None;
             padui::set_active(false);
             self.pad_aim = false;
             self.pad_rep = None;
@@ -3105,6 +3108,7 @@ impl Game {
             return;
         };
         padui::set_active(true);
+        self.pad_live = Some(pad_live(&pad));
         // Binding from the pad (Settings › Controls › Gamepad): its buttons
         // and sticks go to that alone.
         if let Some(cap) = self.binds.capture.clone().filter(|c| c.from_pad()) {
@@ -3169,12 +3173,13 @@ impl Game {
         } else {
             Nav::Off
         };
-        // A small dead zone, the rest of the travel rescaled so there is no step out of it.
-        let dz = |v: f32| {
-            let v = v as f64;
-            let d = 0.12;
-            if v.abs() < d { 0.0 } else { v.signum() * (v.abs() - d) / (1.0 - d) }
-        };
+        // Each thumbstick's dead zone (Settings › Controls › Gamepad), the rest
+        // of the travel rescaled so there is no step out of it.
+        let pm = &self.binds.pad;
+        let (dl, dr, dtrig) = (pm.dead(padmap::Thumb::Left), pm.dead(padmap::Thumb::Right), pm.dead(padmap::Thumb::Triggers));
+        let dzl = |v: f32| padmap::centred(v as f64, dl);
+        let dzr = |v: f32| padmap::centred(v as f64, dr);
+        let dz = |s: padmap::Stick, v: f32| if s.thumb() == padmap::Thumb::Left { dzl(v) } else { dzr(v) };
         // The analogue triggers; on a pad left without a layout they come through as
         // bare Z axes, -1 at rest to +1 squeezed.
         let trig = |b: Button, z: Axis| match (pad.button_data(b), pad.axis_data(z)) {
@@ -3182,6 +3187,7 @@ impl Game {
             (None, Some(a)) => ((a.value() as f64 + 1.0) * 0.5).clamp(0.0, 1.0),
             _ => 0.0,
         };
+        let trig_dz = |b: Button, z: Axis| padmap::one_ended(trig(b, z), dtrig);
         let modifier = pad.is_pressed(Button::North);
         let flying = self.mode == Mode::Fly && !self.pause_open;
         // The globe itself is only on the start screen's Fly page; the main
@@ -3190,18 +3196,18 @@ impl Game {
         // The flying axes, wherever Settings › Controls › Gamepad has put them.
         let map = &self.binds.pad;
         let stick = |s: padmap::Stick| match s {
-            padmap::Stick::LX => dz(pad.value(Axis::LeftStickX)),
-            padmap::Stick::LY => dz(pad.value(Axis::LeftStickY)),
-            padmap::Stick::RX => dz(pad.value(Axis::RightStickX)),
-            padmap::Stick::RY => dz(pad.value(Axis::RightStickY)),
-            padmap::Stick::Trig => (trig(Button::RightTrigger2, Axis::RightZ) - trig(Button::LeftTrigger2, Axis::LeftZ)).clamp(-1.0, 1.0),
+            padmap::Stick::LX => dz(s, pad.value(Axis::LeftStickX)),
+            padmap::Stick::LY => dz(s, pad.value(Axis::LeftStickY)),
+            padmap::Stick::RX => dz(s, pad.value(Axis::RightStickX)),
+            padmap::Stick::RY => dz(s, pad.value(Axis::RightStickY)),
+            padmap::Stick::Trig => (trig_dz(Button::RightTrigger2, Axis::RightZ) - trig_dz(Button::LeftTrigger2, Axis::LeftZ)).clamp(-1.0, 1.0),
         };
         let axis = |a: padmap::PadAxis| map.axis(a).map(|s| stick(s.stick) * s.sign as f64).unwrap_or(0.0);
         self.pad = Controls { pitch: axis(padmap::PadAxis::Pitch), roll: axis(padmap::PadAxis::Roll), yaw: axis(padmap::PadAxis::Rudder), throttle: axis(padmap::PadAxis::Throttle), ..Controls::default() };
         let (look_x, look_y) = (axis(padmap::PadAxis::LookX), axis(padmap::PadAxis::LookY));
         // The buttons held now, for the flying actions held with them.
         let down: Vec<padmap::PadBtn> = padmap::PadBtn::ALL.into_iter().filter(|b| pad.is_pressed(b.gilrs())).collect();
-        let ry = dz(pad.value(Axis::RightStickY));
+        let ry = dzr(pad.value(Axis::RightStickY));
         let right = (pad.value(Axis::RightStickX), pad.value(Axis::RightStickY));
 
         // Moving about the menus: the d-pad (and the left stick too, except
@@ -3268,7 +3274,7 @@ impl Game {
             // Left stick turns the globe (squared, for a fine touch), the triggers zoom.
             let h = self.window.inner_size().height.max(1) as f64;
             let sq = |v: f64| v * v.abs();
-            let (sx, sy) = (sq(dz(lx)), sq(dz(ly)));
+            let (sx, sy) = (sq(dzl(lx)), sq(dzl(ly)));
             if sx != 0.0 || sy != 0.0 {
                 let k = 0.8 * h * dt;
                 self.menu.drag(-sx * k, sy * k, h, 60f64.to_radians());
@@ -8817,6 +8823,23 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
 
 /// The xpad driver's Xbox layout, in SDL's game controller mapping format.
 const XBOX_LAYOUT: &str = "a:b0,b:b1,back:b6,dpdown:h0.4,dpleft:h0.8,dpright:h0.2,dpup:h0.1,guide:b8,leftshoulder:b4,leftstick:b9,lefttrigger:a2,leftx:a0,lefty:a1,rightshoulder:b5,rightstick:b10,righttrigger:a5,rightx:a3,righty:a4,start:b7,x:b2,y:b3,platform:Linux,";
+
+/// A pad's sticks and triggers now, before any dead zone (`padmap::Live`).
+fn pad_live(pad: &gilrs::Gamepad) -> padmap::Live {
+    use gilrs::{Axis, Button};
+    // (a pad left without a layout has its triggers as bare Z axes, -1 at rest)
+    let trig = |b: Button, z: Axis| match (pad.button_data(b), pad.axis_data(z)) {
+        (Some(d), _) => d.value(),
+        (None, Some(a)) => ((a.value() + 1.0) * 0.5).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+    padmap::Live {
+        ls: [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)],
+        rs: [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)],
+        lt: trig(Button::LeftTrigger2, Axis::LeftZ),
+        rt: trig(Button::RightTrigger2, Axis::RightZ),
+    }
+}
 
 /// An Xbox pad gilrs found no mapping for: a firmware newer than its copy of
 /// the SDL controller database, say. Left so, its triggers show up as bare
