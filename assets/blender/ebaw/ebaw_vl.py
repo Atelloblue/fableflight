@@ -219,46 +219,61 @@ def building_rect(b):
 def terminal_blocks(foot, H, tower_hint):
     """The terminal as blocks of one roof level each, from the height model inside its footprint."""
     c = H.cells(foot, inset=0.0)
-    hs = c[:, 2]
-    hs_roof = hs[hs > 2.0]
-    # roof levels: peaks of the height histogram (1 m bins, smoothed), at least 120 cells each
-    hist, edges = np.histogram(hs_roof, bins=np.arange(2.0, 30.0, 0.5))
+    roof = c[c[:, 2] > 2.0]
+    # Roof levels: peaks of the height histogram (0.5 m bins, smoothed), at
+    # least 120 cells each; peaks closer than 1.2 m are one terrace. (Kept
+    # apart, the LiDAR's few centimetres between neighbouring roofs made the
+    # building step like a staircase.)
+    hist, edges = np.histogram(roof[:, 2], bins=np.arange(2.0, 30.0, 0.5))
     sm = np.convolve(hist, [1, 2, 3, 2, 1], "same")
-    levels = []
+    peaks = []
     for i in range(1, len(sm) - 1):
         if sm[i] >= sm[i - 1] and sm[i] > sm[i + 1] and hist[max(0, i - 2):i + 3].sum() >= 120:
-            levels.append(float((edges[i] + edges[i + 1]) / 2))
-    levels = sorted(set(round(v, 1) for v in levels))
-    # each cell above 2 m to its nearest level; lower cells (courtyards) stay open
+            peaks.append((float((edges[i] + edges[i + 1]) / 2), float(hist[max(0, i - 2):i + 3].sum())))
+    clusters = []   # [weighted height, highest peak in it, cells]
+    for h, n in sorted(peaks):
+        if clusters and h - clusters[-1][1] < 1.2:
+            w = clusters[-1][2]
+            clusters[-1] = [(clusters[-1][0] * w + h * n) / (w + n), h, w + n]
+        else:
+            clusters.append([h, h, n])
+    levels = [round(v[0], 1) for v in clusters]
+    # each cell above 2 m to its nearest terrace; lower cells (courtyards) stay open
     lv = np.array(levels)
-    roof = c[c[:, 2] > 2.0]
     near_lv = np.abs(roof[:, 2:3] - lv[None, :]).argmin(1)
+
+    def outline(sel):
+        """The cells as polygons with straight walls: specks dropped and what
+        paint and vents cut out closed, then the LiDAR's 1 m saw edge taken
+        off (simplified to 1.8 m), the corners kept."""
+        g = unary_union([box(x - 0.5, y - 0.5, x + 0.5, y + 0.5) for x, y, _ in sel])
+        g = g.buffer(1.5, join_style="mitre").buffer(-2.5, join_style="mitre").buffer(1.0, join_style="mitre")
+        return g.simplify(1.8, preserve_topology=True).buffer(0)
+
     blocks = []
     taken = Polygon()
     for k in sorted(range(len(lv)), key=lambda k: -lv[k]):
         sel = roof[near_lv == k]
-        if len(sel) < 30:
+        if len(sel) < 40:
             continue
-        g = unary_union([box(x - 0.5, y - 0.5, x + 0.5, y + 0.5) for x, y, _ in sel])
-        # close small gaps and drop specks (1 m), keep within the footprint, below what is taller
-        g = g.buffer(1.0, join_style="mitre").buffer(-2.0, join_style="mitre").buffer(1.0, join_style="mitre")
-        g = g.intersection(foot).difference(taken).buffer(0)
+        g = outline(sel).intersection(foot).difference(taken).buffer(0)
         for part in getattr(g, "geoms", [g]):
-            if part.geom_type == "Polygon" and part.area >= 25:
-                part = part.simplify(0.5)
-                inside = np.array([part.contains(Point(x, y)) for x, y, _ in sel])
-                h = float(np.percentile(sel[inside][:, 2], 70)) if inside.any() else float(lv[k])
-                blocks.append({"poly": [[round(x, 2), round(y, 2)] for x, y in list(part.exterior.coords)[:-1]], "h": round(h, 2), "area": round(part.area)})
+            if part.geom_type == "Polygon" and part.area >= 40:
+                # (cut by the taller terraces and the footprint: straighten again)
+                part = part.simplify(1.0, preserve_topology=True)
+                # one height for the whole terrace, so its parts meet flush
+                h = float(lv[k])
+                blocks.append({"poly": [[round(x, 2), round(y, 2)] for x, y in list(part.exterior.coords)[:-1]], "h": round(h, 1), "area": round(part.area)})
         taken = taken.union(g)
     # What the footprint still has without a block was built after the LiDAR
     # flight (2013-2015: the apron-side block with the brown roof): the
     # middle level, flagged as an estimate.
     rest = foot.difference(unary_union([Polygon(b["poly"]) for b in blocks]).buffer(0.6)).buffer(-1.0).buffer(1.0)
-    mid = float(sorted(levels)[len(levels) // 2]) if levels else 7.0
+    mid = round(float(sorted(levels)[len(levels) // 2]), 1) if levels else 7.0
     for part in getattr(rest, "geoms", [rest]):
         if part.geom_type == "Polygon" and part.area >= 60:
-            part = part.simplify(0.5)
-            blocks.append({"poly": [[round(x, 2), round(y, 2)] for x, y in list(part.exterior.coords)[:-1]], "h": round(mid, 2),
+            part = part.simplify(1.2, preserve_topology=True)
+            blocks.append({"poly": [[round(x, 2), round(y, 2)] for x, y in list(part.exterior.coords)[:-1]], "h": mid,
                            "area": round(part.area), "estimated": True})
     # the tower: the highest point, and its cab roof height
     top = c[np.argmax(c[:, 2])]
