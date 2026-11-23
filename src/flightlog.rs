@@ -507,7 +507,7 @@ pub struct Totals {
     pub best: Option<u32>,
 }
 
-/// "2026-11-23 21:40" (UTC) from Unix seconds.
+/// "2026-11-23 21:40Z" (UTC, as in aviation) from Unix seconds.
 pub fn date_text(unix: i64) -> String {
     let days = unix.div_euclid(86400);
     let secs = unix.rem_euclid(86400);
@@ -521,7 +521,7 @@ pub fn date_text(unix: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs / 60 % 60)
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", secs / 3600, secs / 60 % 60)
 }
 
 /// "1:25" from seconds.
@@ -667,8 +667,8 @@ mod tests {
 
     #[test]
     fn dates_and_hours_read_right() {
-        assert_eq!(date_text(0), "1970-01-01 00:00");
-        assert_eq!(date_text(1_795_470_000), "2026-11-23 21:40");
+        assert_eq!(date_text(0), "1970-01-01 00:00Z");
+        assert_eq!(date_text(1_795_470_000), "2026-11-23 21:40Z");
         assert_eq!(hours_text(5100.0), "1:25");
     }
 
