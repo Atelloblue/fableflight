@@ -74,6 +74,7 @@ FENCE_CLEAR = 12.0                       # perimeter fence kept this far from bu
 QUERY = """[out:json][timeout:60];
 (way["aeroway"](51.178,4.425,51.202,4.495);
  node["aeroway"~"parking_position|holding_position|windsock|navigationaid"](51.178,4.425,51.202,4.495);
+ node["airmark"="beacon"](51.178,4.425,51.202,4.495);
  way["building"](51.183,4.440,51.196,4.476););
 out geom tags;"""
 
@@ -296,7 +297,8 @@ def main():
             holds.append({"x": round(p[0], 2), "y": round(p[1], 2), "hdg": round(hd, 1), "twy": twy})
         elif a == "windsock":
             socks.append([round(p[0], 2), round(p[1], 2)])
-        elif a == "navigationaid":
+        elif a == "navigationaid" or tag(x, "airmark") == "beacon":
+            # PAPIs, and the radio beacons: localizer, glide slope, DVOR, markers
             navaids.append({"x": round(p[0], 2), "y": round(p[1], 2), "tags": x.get("tags", {})})
 
     # fuel station (aeroway=fuel): its minimum rectangle

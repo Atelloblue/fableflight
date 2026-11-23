@@ -20,6 +20,18 @@ Builds collection 04_Airside_Props:
   fence          the perimeter fence along the aerodrome boundary (kept clear of
                  the buildings): chain-link fabric, posts every 3 m, three strands
                  of barbed wire on top.
+  navaids        the radio aids where OSM has them (airmark=beacon), sized from
+                 the Flemish orthophoto and LiDAR (ebaw_vl.py's sources):
+                 - DVOR/DME "ANT": a 29 m sixteen-sided counterpoise 7.3 m up on
+                   steel legs, 48 antennas round a 13.5 m circle, the carrier and
+                   DME antennas in the middle, the equipment shelter beneath;
+                 - ILS 29 localizer "IAD" past the far end of runway 11: twenty
+                   log-periodic antennas 2.4 m apart (48 m) across the runway's
+                   line, about 2 m high;
+                 - its glide slope (with the DME) 120 m south of runway 29's
+                   touchdown zone: a 14 m lattice mast with three antennas facing
+                   the approach, on a concrete pad with its shelter (the LiDAR
+                   misses so thin a mast: the height is the usual one).
 
 Everything repeated is a linked duplicate of one mesh: vehicles, cones,
 posts, barriers, signs' legs.
@@ -46,7 +58,7 @@ from mathutils import Vector
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from ebaw_lib import (MATS, Graph, Mesh, add_bevel, args, camera, check_render, collection,  # noqa: E402
-                      instance, octagon, text_object)
+                      instance, octagon, rail, text_object)
 
 LAYOUT = json.loads((HERE / "ebaw_layout.json").read_text())
 COLL = "04_Airside_Props"
@@ -179,6 +191,10 @@ def materials():
         "label_jet": mat_plain("M_Label_JetA1_Black", (0.01, 0.01, 0.01), 0.4),
         "label_avgas": mat_plain("M_Label_Avgas_Red", (0.55, 0.02, 0.015), 0.4),
         "lamp": mat_emit("M_Lamp_Amber", (1.0, 0.45, 0.0), 6.0),
+        # the orthophoto's rusty brown counterpoise, a little less saturated
+        "deck": mat_plain("M_DVOR_Counterpoise", (0.30, 0.21, 0.16), 0.7, 0.3),
+        "radome": mat_plain("M_Radome_White", (0.72, 0.72, 0.70), 0.45),
+        "shelter": mat_plain("M_Shelter_Beige", (0.50, 0.47, 0.40), 0.7),
     })
     MATS["letters"] = MATS["legend_black"]
 
@@ -385,6 +401,115 @@ def windsocks(coll, ctl):
             drv.expression = expr
 
 
+# ---------------------------------------------------------------- navaids
+
+def beacon(kind):
+    """The OSM beacon of a kind ('DVOR', 'localizer', 'glideslope'), or None."""
+    for n in LAYOUT["navaids"]:
+        t = n["tags"]
+        if (kind == "DVOR" and "DVOR" in t.get("beacon:type", "")) or t.get(kind) == "yes":
+            return Vector((n["x"], n["y"], 0.0))
+    return None
+
+
+def to_local(v, h):
+    """A world (east, north) offset in the frame bearing_rot(h) turns to the world."""
+    a = math.radians(h)
+    return (v[0] * math.cos(a) - v[1] * math.sin(a), v[0] * math.sin(a) + v[1] * math.cos(a))
+
+
+def dvor(coll, at):
+    m = Mesh(["galv", "deck", "radome", "white_paint", "shelter", "dark", "obstacle", "concrete"])
+    n, R, z = 16, 14.5, 7.3
+    ring = lambda r, k=n, o=0.0: [(r * math.cos(o + 2 * math.pi * i / k), r * math.sin(o + 2 * math.pi * i / k)) for i in range(k)]
+    m.prism(ring(R), z - 0.15, z, "deck")
+    for x, y in ring(13.2) + ring(6.0, 8, math.pi / 8):                   # legs on footings
+        m.box(x - 0.6, x + 0.6, y - 0.6, y + 0.6, -0.3, 0.15, "concrete")
+        m.box(x - 0.13, x + 0.13, y - 0.13, y + 0.13, 0.15, z - 0.15, "galv")
+    for x, y in ring(R - 0.2):                                            # radial beams
+        L = math.hypot(x, y)
+        ux, uy = x / L, y / L
+        q = [(-uy * 0.1, ux * 0.1), (x - uy * 0.1, y + ux * 0.1), (x + uy * 0.1, y - ux * 0.1), (uy * 0.1, -ux * 0.1)]
+        m.prism(q[::-1] if (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[1][1] - q[0][1]) * (q[2][0] - q[0][0]) < 0 else q, z - 0.45, z - 0.15, "galv")
+    rail(m, ring(R - 0.1), z, 1.1)
+    for x, y in ring(6.75, 48):                                           # the sideband antennas
+        m.box(x - 0.04, x + 0.04, y - 0.04, y + 0.04, z, z + 1.2, "galv")
+        m.prism([(x + dx, y + dy) for dx, dy in octagon(0.28)], z + 1.2, z + 1.55, "radome")
+    for x, y in ring(2.6, 8):                                             # field monitors
+        m.box(x - 0.03, x + 0.03, y - 0.03, y + 0.03, z, z + 0.7, "white_paint")
+    m.prism(octagon(0.6), z, z + 1.8, "radome")                           # carrier antenna
+    m.prism(octagon(0.14), z + 1.8, z + 3.2, "radome")                    # DME
+    m.prism(octagon(0.09), z + 3.2, z + 3.35, "obstacle")
+    m.box(-3.0, 3.0, -1.25, 1.25, 0.0, 2.8, "shelter")                    # equipment shelter
+    m.box(-0.45, 0.45, -1.27, -1.25, 0.0, 2.1, "dark")
+    m.box(9.5, 10.5, -0.4, 0.4, 0.0, z, "galv", skip=("top",))           # ladder cage to the deck
+    me = m.build("NAV_DVOR_ANT", coll, None)
+    me.location = (at.x, at.y, 0.0)
+    return me
+
+
+def localizer(coll, at, h):
+    m = Mesh(["galv", "white_paint", "concrete"])
+    m.box(-24.6, 24.6, -0.5, 0.5, -0.2, 0.1, "concrete")                   # the footing strip
+    for i in range(20):
+        x = (i - 9.5) * 2.4
+        m.box(x - 0.05, x + 0.05, -0.05, 0.05, 0.1, 1.95, "galv")
+        m.box(x - 0.03, x + 0.03, -0.5, 2.0, 1.95, 2.03, "galv")           # boom toward the approach
+        for k in range(8):                                                 # dipoles, longest at the back
+            y = -0.4 + k * 0.32
+            hl = 0.85 - k * 0.07
+            m.box(x - hl, x + hl, y - 0.015, y + 0.015, 1.97, 2.01, "white_paint")
+    me = m.build("NAV_LOC_IAD", coll, None)
+    me.location = (at.x, at.y, 0.0)
+    me.rotation_euler = (0.0, 0.0, bearing_rot(h))
+    return me
+
+
+def glideslope(coll, at, h, pad_off):
+    m = Mesh(["galv", "white_paint", "concrete", "shelter", "dark", "obstacle", "radome"])
+    px, py = to_local(pad_off, h)
+    m.box(px - 7.5, px + 7.5, py - 7.5, py + 7.5, -0.2, 0.12, "concrete")
+    top = 14.0
+    legs = [(0.0, 0.45), (-0.4, -0.25), (0.4, -0.25)]
+    for x, y in legs:
+        m.box(x - 0.05, x + 0.05, y - 0.05, y + 0.05, 0.12, top, "galv")
+    for k in range(1, 14):                                                 # rungs
+        zz = k * 1.0
+        for (x0, y0), (x1, y1) in zip(legs, legs[1:] + legs[:1]):
+            L = math.dist((x0, y0), (x1, y1))
+            nx, ny = -(y1 - y0) / L * 0.02, (x1 - x0) / L * 0.02
+            q = [(x0 - nx, y0 - ny), (x1 - nx, y1 - ny), (x1 + nx, y1 + ny), (x0 + nx, y0 + ny)]
+            m.prism(q if (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[1][1] - q[0][1]) * (q[2][0] - q[0][0]) > 0 else q[::-1], zz - 0.02, zz + 0.02, "galv")
+    for zz in (4.5, 9.0, 13.3):                                            # the three antennas, facing the approach (+Y)
+        m.box(-0.08, 0.08, 0.45, 0.9, zz - 0.06, zz + 0.06, "galv")
+        m.box(-0.7, 0.7, 0.9, 1.25, zz - 0.35, zz + 0.35, "radome")
+    m.prism(octagon(0.13), top, top + 1.3, "radome")                       # DME
+    m.prism(octagon(0.09), top + 1.3, top + 1.45, "obstacle")
+    sx, sy = px - 3.5, py - 3.0                                            # shelter on the pad
+    m.box(sx - 1.5, sx + 1.5, sy - 1.2, sy + 1.2, 0.12, 2.7, "shelter")
+    m.box(sx - 0.45, sx + 0.45, sy - 1.22, sy - 1.2, 0.12, 2.2, "dark")
+    me = m.build("NAV_GS_29", coll, None)
+    me.location = (at.x, at.y, 0.0)
+    me.rotation_euler = (0.0, 0.0, bearing_rot(h))
+    return me
+
+
+def navaids(coll):
+    h = LAYOUT["runway"]["hdg_11"]          # both ILS aerials radiate toward runway 29's approach
+    done = []
+    p = beacon("DVOR")
+    if p:
+        done.append(dvor(coll, p + Vector((0.9, 1.2, 0.0))))   # the LiDAR's centre of the counterpoise
+    p = beacon("localizer")
+    if p:
+        along = Vector((math.sin(math.radians(h - 90)), math.cos(math.radians(h - 90)), 0.0))
+        done.append(localizer(coll, p + RWY_U * 2.5 - along * 2.0, h))  # the array as the orthophoto shows it
+    p = beacon("glideslope")
+    if p:
+        done.append(glideslope(coll, p, h, (-3.0, 4.0)))
+    return done
+
+
 # ---------------------------------------------------------------- signs
 
 def sign(coll, x, y, hdg, text, panel, legend, name):
@@ -576,6 +701,7 @@ def build():
     fuel_station(coll, [refueller_mesh(coll, "JET A-1"), refueller_mesh(coll, "AVGAS 100LL")])
     stands_gse(coll, gse)
     posts = fence(coll, post_mesh(coll))
+    navaids(coll)
     return coll, posts
 
 
@@ -588,12 +714,16 @@ def shots():
     f = Vector((math.sin(math.radians(h["hdg"])), math.cos(math.radians(h["hdg"])), 0.0))
     hp = Vector((h["x"], h["y"], 0.0))
     fl = LAYOUT["fence"][0][len(LAYOUT["fence"][0]) // 2]
+    vo, lo, gs = (beacon(k) or Vector() for k in ("DVOR", "localizer", "glideslope"))
     return {
         "stands": (W(52.0, 34.0) + (7.0,), W(30.0, 12.0) + (1.0,), 30.0),
         "fuel": ((fu["x"] + 26.0, fu["y"] + 20.0, 7.0), (fu["x"], fu["y"], 1.5), 30.0),
         "sign": ((hp - f * 22.0 + Vector((0, 0, 2.2))).to_tuple(), (hp + Vector((-f.y, f.x, 0)) * 12.0 + Vector((0, 0, 0.8))).to_tuple(), 35.0),
         "windsock": ((ws[0] + 12.0, ws[1] - 9.0, 3.0), (ws[0], ws[1], 5.0), 35.0),
         "fence": ((fl[0] + 10.0, fl[1] + 10.0, 2.0), (fl[0], fl[1], 1.4), 30.0),
+        "dvor": ((vo.x + 30.0, vo.y - 26.0, 14.0), (vo.x, vo.y, 6.0), 35.0),
+        "loc": ((lo.x + 30.0, lo.y - 20.0, 6.0), (lo.x, lo.y, 1.5), 35.0),
+        "gs": ((gs.x + 22.0, gs.y + 14.0, 6.0), (gs.x, gs.y, 7.0), 35.0),
     }
 
 
