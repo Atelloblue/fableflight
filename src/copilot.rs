@@ -293,7 +293,6 @@ impl Game {
             "altimeter_setting_hpa": num(self.radios.setting(self.wx.qnh)),
             "qnh_hpa": num(self.wx.qnh),
             "altimeter_follows_qnh": self.radios.baro.is_none(),
-            "nav_display_on": self.radios.show,
         })
     }
 
@@ -382,7 +381,7 @@ impl Game {
                 "holding_for_terrain": p.hold || self.hold_spot.is_some(),
                 "airport_loading": self.airport_rx.is_some() || self.menu.starting,
                 "status": self.status,
-                "view": if self.cam_mode == 1 { "cockpit" } else { "chase" },
+                "view": match self.cam_mode { 1 => "cockpit", crate::settings::TAIL_VIEW => "tail", _ => "chase" },
                 "hud": self.show_hud,
                 "view_panel_open": self.info_open,
                 "fps": num(self.fps),
@@ -955,6 +954,7 @@ impl Game {
             let m = match m {
                 "hdg" => Lat::Hdg,
                 "nav" => Lat::Nav,
+                "gps" => Lat::Gps,
                 "apr" => Lat::Apr,
                 "roll" => Lat::Roll,
                 _ => return Err(format!("unknown lateral mode {m:?}")),
@@ -979,6 +979,9 @@ impl Game {
         }
         if matches!(self.ap.lat, Lat::Nav | Lat::Apr) && self.radios.nav.is_none() {
             notes.push("NAV1 is not tuned: the mode stays armed, flying the heading bug (set_radios)");
+        }
+        if self.ap.lat == Lat::Gps && self.plan.done() {
+            notes.push("no flight plan to follow: GPS stays armed, flying the heading bug");
         }
         Ok(json!({ "ok": true, "notes": notes, "autopilot": self.autopilot_state() }))
     }
