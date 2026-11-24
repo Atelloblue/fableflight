@@ -107,6 +107,11 @@ reaches about 80° of bank in 4 s, a 747 about 14°).
 - A wake node takes the ground under the point where it was laid (or the
   ground round the player, where that is not loaded) for deciding when it
   stops sinking and spreads.
+- Wake nodes more than 3 km from the player, where nothing samples them, are
+  moved every 0.25 s instead of every frame (`wake::NEAR`, `COARSE`). By
+  the time they come back into reach, what the airframe feels differs from
+  per-frame stepping by about a twentieth of what changing the frame rate
+  between 30 and 120 fps already does.
 - Airport traffic sheds a wake only above 10 m (the traffic model's own
   limit); a player's wake is laid from 20 m/s, so also on a fast takeoff roll.
 - `Weather::at`'s gust swells are uniform in space (they stand for the

@@ -27,6 +27,16 @@ const EVERY: f64 = 0.5;
 /// Longest a wake lasts (s), and how far from the player it is kept (m).
 const LIFE: f64 = 240.0;
 const KEEP: f64 = 25_000.0;
+/// Nodes within `NEAR` metres of the player move every step, exactly as
+/// before; further off, where nothing samples them (`near` looks a few
+/// hundred metres out, and nothing closes 3 km in `COARSE`), they are moved
+/// every `COARSE` seconds by the time gone by, which saves most of the wind
+/// lookups. Their drift and sink change over tens of seconds, so they come
+/// back into reach where they would have been to within centimetres: what
+/// the aircraft then feels differs by a twentieth of what running the game
+/// at 30 or 120 fps instead of 60 already changes.
+const NEAR: f64 = 3_000.0;
+const COARSE: f64 = 0.25;
 
 /// An aircraft shedding a wake this instant.
 #[derive(Clone, Copy, Debug)]
@@ -52,11 +62,19 @@ struct Node {
     /// the ground's sea-level height under where it was laid (m): a wake
     /// drifts a few hundred metres at most, so that stays its ground
     ground: f64,
+    /// its decay time scale T₀ = 2π b₀² / Γ₀ (s), fixed when it is laid
+    t0: f64,
+    /// time gone by since it was last moved (s): see `NEAR`
+    pend: f64,
 }
 
 impl Node {
+    fn new(mid: DVec3, right: DVec3, b0: f64, gamma0: f64, born: f64, ground: f64) -> Self {
+        let t0 = std::f64::consts::TAU * b0 * b0 / gamma0.max(1e-3);
+        Node { mid, right, sep: b0, b0, gamma0, born, ground, t0, pend: 0.0 }
+    }
     fn t0(&self) -> f64 {
-        std::f64::consts::TAU * self.b0 * self.b0 / self.gamma0.max(1e-3)
+        self.t0
     }
     /// Circulation at `t`, with the air's turbulence `sigma` (m/s) hastening the decay.
     fn gamma(&self, t: f64, sigma: f64) -> f64 {
@@ -126,11 +144,18 @@ impl Wakes {
             let b0 = std::f64::consts::FRAC_PI_4 * s.span;
             let gamma0 = s.mass * 9.81 / (rho * v * b0);
             let ground = ground(s.pos).unwrap_or(fallback);
-            tr.nodes.push_back(Node { mid: s.pos, right, sep: b0, b0, gamma0, born: t, ground });
+            tr.nodes.push_back(Node::new(s.pos, right, b0, gamma0, t, ground));
         }
         let sigma = self.sigma;
         for tr in &mut self.trails {
-            for n in &mut tr.nodes {
+            tr.nodes.retain_mut(|n| {
+                n.pend += dt;
+                // Far from the player and moved not long ago: it waits (and
+                // is aged, and dropped if due, when it next moves).
+                if n.pend < COARSE && n.mid.distance_squared(player) >= NEAR * NEAR {
+                    return true;
+                }
+                let dt = std::mem::take(&mut n.pend);
                 let g = n.gamma(t, sigma);
                 let up = n.mid.normalize();
                 let h = n.mid.length() - crate::geo::R - n.ground;
@@ -139,8 +164,8 @@ impl Wakes {
                 let gnd = 1.0 - smooth(0.5 * n.b0, 1.5 * n.b0, h);
                 n.mid += (wind(n.mid, h.max(2.0)) - up * (w * (1.0 - gnd))) * dt;
                 n.sep += w * gnd * 2.0 * dt;
-            }
-            tr.nodes.retain(|n| t - n.born < LIFE && n.gamma(t, sigma) > 0.05 * n.gamma0 && n.mid.distance(player) < KEEP);
+                t - n.born < LIFE && g > 0.05 * n.gamma0 && n.mid.distance(player) < KEEP
+            });
         }
         self.trails.retain(|tr| !tr.nodes.is_empty() || t - tr.last < 5.0);
     }
@@ -148,8 +173,14 @@ impl Wakes {
     /// The stretches of wake within `reach` metres of `pos`, at time `t`.
     pub fn near(&self, pos: DVec3, reach: f64, t: f64) -> Vec<Seg> {
         let mut out = Vec::new();
+        // (A stretch is never more than 400 m long, so one whose nearer end
+        // is further than `reach` + 400 m away is out, without the square roots.)
+        let far = (reach + 401.0) * (reach + 401.0);
         for tr in &self.trails {
             for (a, b) in tr.nodes.iter().zip(tr.nodes.iter().skip(1)) {
+                if a.mid.distance_squared(pos).min(b.mid.distance_squared(pos)) > far {
+                    continue;
+                }
                 let span = a.mid.distance(b.mid);
                 if span > 400.0 {
                     continue;
