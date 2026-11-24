@@ -51,6 +51,7 @@ mod flightui;
 mod mainmenu;
 mod menu;
 mod minimap;
+mod vfrmap;
 mod padmap;
 mod padui;
 mod pave;
@@ -167,6 +168,11 @@ const PSHADOW_DEPTH: f32 = 1600.0;
 const MOON_E: f32 = SUN_E * 0.0035;
 /// What a 3D tiles detail level costs, as measured over San Francisco (see
 /// docs/photorealistic-3d-tiles-plan.md).
+/// the stations the radios are tuned to, for the moving map.
+fn minimap_tuned(r: &nav::Radios) -> vfrmap::Tuned {
+    vfrmap::Tuned { nav: r.nav.clone(), obs: r.obs, adf: r.adf.clone() }
+}
+
 fn detail_hint(d: gmaps::Detail) -> &'static str {
     match d {
         gmaps::Detail::Low => t!("game.low_softer_buildings_4_km"),
@@ -326,6 +332,8 @@ struct Args {
     headless: bool,
     minimap_plan: Option<bool>,
     minimap_heading_up: Option<bool>,
+    /// `--full-map`: start with the full-size map open (scripted screenshots)
+    full_map: bool,
     offline: bool,
     /// --snow auto|off|always: snow on the ground for this run (snow.rs)
     snow: Option<snow::Mode>,
@@ -422,7 +430,7 @@ struct Args {
     mcp_port: u16,
 }
 
-const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--contrails | --no-contrails] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--no-scenery] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
+const CLI_USAGE: &str = "fablegame [--version] [--menu | --no-menu] [--menu-screen main|fly|aircraft|settings] [--menu-view LAT,LON,ALT_M] [--hangar mine|download[:FOLDER]] [--place \"city or address\"] [--lat D --lon D] [--alt M | --agl M] [--heading DEG] [--speed KT] [--time HOURS] [--time-rate X] [--day 0..364] [--clouds 0..1] [--storms 0..1] [--alto 0..1] [--wind KT,FROM_DEG] [--haze 0.2..40] [--rain 0..1] [--rain-at KM,BEARING] [--wet 0..1] [--birds off|low|medium|high] [--flock gull|crow|starling|buzzard|goose,KM[,BEARING[,AGL_M]]] [--snow auto|off|always] [--weather [clear|fair|hazy|overcast|windy|storm]] [--storm-at KM,BEARING[,RADIUS_KM][,shower|thunder|severe|supercell]] [--squall-at KM,BEARING[,LENGTH_KM]] [--strike cg|ic,KM,BEARING@SECONDS] [--flight-menu SECONDS] [--pause-menu flight|places|radio|weather|game|settings[:SECTION]|controls|failures[@SECONDS]] [--settings general|graphics|sound|camera|controls|map] [--airport CODE [--runway 28L] [--approach]] [--aircraft KEY] [--max-zoom 8..19] [--cockpit | --tail-view] [--fov DEG] [--no-vsync] [--no-taa] [--graphics very-low|low|medium|high|ultra] [--storm-quality low|medium|high|ultra] [--contrails | --no-contrails] [--dynamic FPS] [--render-scale 0.35..2] [--upscaler bilinear|fsr1|fsr3|fsr4] [--fsr4-install] [--headless] [--minimap plan|satellite] [--minimap-up north|heading] [--full-map] [--fps-log] [--bench SECONDS] [--mute] [--lang CODE] [--fuel 0..1] [--cold] [--arcade] [--mcp | --no-mcp] [--mcp-port PORT] [--offline] [--imagery URL_TEMPLATE] [--google | --no-google] [--photoreal | --no-photoreal] [--photo-detail low|medium|high|ultra] [--no-pave] [--google-key KEY] [--hold SECONDS] [--no-scenery] [--livery N] [--still] [--boost-at SECONDS] [--stage-at SECONDS] [--engines GROUP] [--ship] [--damage ...]";
 
 fn parse_args() -> Args {
     let v: Vec<String> = std::env::args().skip(1).collect();
@@ -477,6 +485,7 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
         headless: false,
         minimap_plan: None,
         minimap_heading_up: None,
+        full_map: false,
         offline: false,
         snow: None,
         shots: Vec::new(),
@@ -569,6 +578,10 @@ fn parse_args_from(v: &[String]) -> Result<Args, String> {
                     "satellite" => false,
                     _ => return Err(format!("{flag} takes plan or satellite, got '{s}'")),
                 });
+            }
+            "--full-map" => {
+                a.full_map = true;
+                used = 1;
             }
             "--minimap-up" => {
                 let s = req(flag, i)?;
@@ -1875,6 +1888,7 @@ impl Game {
         }
         if let Some(plan) = args.minimap_plan { g.minimap.plan = plan; }
         if let Some(up) = args.minimap_heading_up { g.minimap.heading_up = up; }
+        if args.full_map { g.minimap.toggle_full(); }
         // With --menu, an --airport is chosen on the globe rather than flown from.
         if args.menu == Some(true) {
             if let Some((i, rw, appr)) = g.pending_airport.take() {
@@ -4122,6 +4136,7 @@ impl Game {
             && !self.info_open
             && !self.goto_open
             && !self.show_help
+            && !self.minimap.full
             && self.binds.capture.is_none()
             && !self.egui_ctx.text_edit_focused();
         if want && !self.mouse_captured {
@@ -4383,6 +4398,7 @@ impl Game {
             KeyCode::Escape if self.radial.open => self.radial.open = false,
             // Esc closes a pop-up window first; otherwise it pauses.
             KeyCode::Escape if self.show_help => self.show_help = false,
+            KeyCode::Escape if self.minimap.full => self.minimap.full = false,
             KeyCode::Escape => self.set_pause_menu(true),
             KeyCode::KeyR if self.arcade || self.crashed => self.respawn_here(),
             KeyCode::KeyR => self.arcade_only(t!("game.respawning_in_flight")),
@@ -4449,6 +4465,7 @@ impl Game {
             KeyCode::KeyH if self.cam_mode == 1 => self.hud_cockpit = !self.hud_cockpit,
             KeyCode::KeyH => self.show_hud = !self.show_hud,
             KeyCode::Backquote => self.minimap.visible = !self.minimap.visible,
+            KeyCode::KeyJ => self.minimap.toggle_full(),
             KeyCode::Insert => {
                 self.plane.pair_off[1] = [false; 2];
                 let m = &mut self.plane.sys.elec.master;
@@ -4620,6 +4637,10 @@ impl Game {
             raw.events.retain(|e| !matches!(e, egui::Event::Key { key: egui::Key::Tab, .. }));
         }
         raw.events.append(&mut self.pad_events);
+        // --cursor points the UI too, for scripted screenshots of it.
+        if let Some((x, y)) = self.script_cursor {
+            raw.events.push(egui::Event::PointerMoved(egui::pos2(x as f32 / ppp, y as f32 / ppp)));
+        }
         // The pad works the game whether or not the window has the keyboard,
         // and egui only lets a focused slider take the arrows in a focused window.
         if padui::active() {
@@ -5351,7 +5372,7 @@ impl Game {
 
     /// The settings worth keeping, as they are now.
     fn live_settings(&self) -> settings::Settings {
-        settings::Settings { lang: self.prefs_lang, sound_on: self.sound_on, volume: self.volume, cam_mode: self.cam_mode, cockpit_fov: self.cockpit_fov, look_sens: self.look_sens, invert_look_cockpit: self.invert_look_cockpit, invert_look_outside_x: self.invert_look_outside_x, invert_look_outside_y: self.invert_look_outside_y, show_hud: self.show_hud, hud_cockpit: self.hud_cockpit, path_marker: self.path_marker, minimap: self.minimap.visible, landing_guidance: self.minimap.landing_guidance, arcade: self.arcade, minimap_plan: self.minimap.plan, minimap_heading_up: self.minimap.heading_up, minimap_zoom: self.minimap.zoom, minimap_size: self.minimap.size.x, minimap_height: self.minimap.size.y, taa: self.gfx.taa, live_traffic: self.live.enabled(), live_weather: self.wx.live, real_time: self.wx.real_time, snow: self.snow, last: self.last_start.clone(), multiplayer: self.mp_on || self.mp_held, mp_server: self.mp_server.clone(), mp_name: self.mp_name.clone() }
+        settings::Settings { lang: self.prefs_lang, sound_on: self.sound_on, volume: self.volume, cam_mode: self.cam_mode, cockpit_fov: self.cockpit_fov, look_sens: self.look_sens, invert_look_cockpit: self.invert_look_cockpit, invert_look_outside_x: self.invert_look_outside_x, invert_look_outside_y: self.invert_look_outside_y, show_hud: self.show_hud, hud_cockpit: self.hud_cockpit, path_marker: self.path_marker, minimap: self.minimap.visible, landing_guidance: self.minimap.landing_guidance, arcade: self.arcade, minimap_plan: self.minimap.plan, minimap_heading_up: self.minimap.heading_up, minimap_zoom: self.minimap.zoom, minimap_size: self.minimap.size.x, minimap_height: self.minimap.size.y, map_airports: self.minimap.layers.airports, map_navaids: self.minimap.layers.navaids, taa: self.gfx.taa, live_traffic: self.live.enabled(), live_weather: self.wx.live, real_time: self.wx.real_time, snow: self.snow, last: self.last_start.clone(), multiplayer: self.mp_on || self.mp_held, mp_server: self.mp_server.clone(), mp_name: self.mp_name.clone() }
     }
 
     /// Saves the settings when they have changed (looked at once a second,
@@ -8054,6 +8075,34 @@ impl Game {
                     }
                 }
             }
+            // The map destination: a diamond and tag in the HUD, like live traffic.
+            if let (true, Some((vp, cam)), Some(dest)) = (self.hud_on(), self.live_view, self.minimap.destination()) {
+                let screen = ctx.content_rect();
+                let dest_pos = geo::lla_to_pos(dest.lat, dest.lon, 0.0);
+                let rel = dest_pos - cam;
+                let d = rel.length();
+                let c = vp * rel.as_vec3().extend(1.0);
+                if c.w > 0.0 {
+                    let at = egui::pos2(screen.left() + (c.x / c.w * 0.5 + 0.5) * screen.width(), screen.top() + (0.5 - c.y / c.w * 0.5) * screen.height());
+                    if screen.expand(40.0).contains(at) {
+                        let painter = ctx.layer_painter(egui::LayerId::background());
+                        let col = minimap::DEST_COLOR;
+                        let r = 6.0;
+                        let diamond = vec![at + egui::vec2(0.0, -r), at + egui::vec2(r, 0.0), at + egui::vec2(0.0, r), at + egui::vec2(-r, 0.0)];
+                        painter.add(egui::Shape::closed_line(diamond, egui::Stroke::new(1.8, col)));
+                        painter.circle_filled(at, 2.0, col);
+                        let title = dest.name.as_deref().unwrap_or(t!("minimap.destination"));
+                        let brg = rel.dot(e).atan2(rel.dot(n)).to_degrees().rem_euclid(360.0);
+                        let line2 = format!("{}  ·  {:03.0}°", minimap::distance_label(d, i18n::lang()), brg);
+                        let shade = Color32::from_black_alpha(200);
+                        for (k, (s, f, col)) in [(title, menu::semibold(11.5), Color32::WHITE), (line2.as_str(), menu::medium(10.0), flightui::SOFT)].into_iter().enumerate() {
+                            let pos = at + egui::vec2(10.0, -12.0 + 13.0 * k as f32);
+                            painter.text(pos + egui::vec2(1.0, 1.0), Align2::LEFT_TOP, s, f.clone(), shade);
+                            painter.text(pos, Align2::LEFT_TOP, s, f, col);
+                        }
+                    }
+                }
+            }
             // The seeker's target: a diamond on the aircraft, and its range.
             if let (true, Some((vp, cam))) = (self.hud_on(), self.live_view) {
                 if let Some(t) = &self.weapons.target_view {
@@ -8218,8 +8267,10 @@ impl Game {
                     });
                 });
             }
-            if self.hud_on() && !self.pause_open && !self.show_help && !self.goto_open {
-                if self.minimap.visible {
+            self.minimap.trail.push(lat.to_degrees(), lon.to_degrees());
+            self.minimap.tuned = minimap_tuned(&self.radios);
+            if !self.pause_open && !self.show_help && !self.goto_open && (self.minimap.full || (self.hud_on() && self.minimap.visible)) {
+                {
                     let horizontal = f.dot(e).hypot(f.dot(n));
                     self.minimap.show(ctx, &self.src, lat, lon, (horizontal > 1e-5).then_some(hdg.to_radians()), self.info_open, landing_guide.as_ref(), &self.world);
                 }
