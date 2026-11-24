@@ -1900,7 +1900,7 @@ impl Game {
             g[2],
             g[3],
             [g[4][0], local as f32, p.gear as f32, p.flap_deg() as f32],
-            [lit + card.rem_euclid(360.0), strobe * pw, beacon as f32 * pw, if (self.spec.id != 0 && p.gear_down || self.spec.id == 0 && p.landing_lights) && p.sys.powered() { 1.0 } else { 0.0 }],
+            [lit + card.rem_euclid(360.0), strobe * pw, beacon as f32 * pw, if (if matches!(self.spec.id, 0 | 10) { p.landing_lights } else { p.gear_down }) && p.sys.powered() { 1.0 } else { 0.0 }],
         ]
     }
 
@@ -3804,6 +3804,8 @@ impl Game {
         data[2] = [self.gauges.cylinder_head_f(), ((p.trim + 0.05) / 0.29) as f32, if p.sys.powered() { 1.0 } else { 0.0 }, p.engine_hours as f32];
         let plot = |pos: DVec3| { let v = pos - p.pos; [v.dot(east) as f32 / 18520.0, v.dot(north) as f32 / 18520.0, 1.0, 0.0] };
         if let Some(st) = &self.radios.nav { data[3] = plot(st.pos()); }
+        // (row 3's last slot: the fuel flow in US gal/h, for the Bonanza's gauge)
+        data[3][3] = (p.fuel_flow * 3600.0 / 0.72 / 3.785) as f32;
         for (dst, (st, _)) in data[4..8].iter_mut().zip(nav::near(lat.to_degrees(), lon.to_degrees(), 18520.0, nav::Kind::Vor).iter().take(4)) { *dst = plot(st.pos()); }
         // Rows 8-11: what the glass cockpits show of the autopilot and the
         // systems (common.wgsl `Globals::cockpit`, deck650.wgsl).
@@ -3908,6 +3910,10 @@ impl Game {
             "fuel_control_l" | "fuel_control_r" | "battery_l" | "battery_r" => self.pair_switch(id),
             "fuel_valve" | "fuel_next" | "fuel_prev" => {
                 self.plane.fuel_selector = self.plane.fuel_selector.turn(id != "fuel_prev");
+                // (The Bonanza's selector has LEFT, RIGHT and OFF: no BOTH.)
+                if std::ptr::eq(self.spec, &aircraft::bonanza::SPEC) && self.plane.fuel_selector == plane::FuelSelector::Center {
+                    self.plane.fuel_selector = self.plane.fuel_selector.turn(id != "fuel_prev");
+                }
             }
             "nav_next" | "nav_prev" | "adf_next" | "adf_prev" => {
                 let adf = id.starts_with("adf");
