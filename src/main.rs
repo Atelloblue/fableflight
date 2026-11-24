@@ -5000,10 +5000,14 @@ impl Game {
                         wake::Source { id: 0x6d70_0000_0000_0000 ^ r.id as u64, pos: r.pos, vel: r.vel, span: spec.b, mass: spec.mass }
                     }))
                     .collect();
-                let wx = &self.wx;
-                let ground_h = h - agl;
+                let (wx, world) = (&self.wx, &self.world);
                 self.wakes.sigma = air.sigma_w;
-                self.wakes.step(dt, self.time, &sources, |p| { let a = p.length() - geo::R - ground_h; wx.steady(p, a.max(2.0)) }, ground_h, self.plane.pos);
+                // (Each node reads the ground under it once, as it is laid.)
+                let ground_at = |p: DVec3| {
+                    let (la, lo, _) = geo::pos_to_lla(p);
+                    world.ground(la, lo).map(|g| g.h)
+                };
+                self.wakes.step(dt, self.time, &sources, |p, agl| wx.steady(p, agl), ground_at, h - agl, self.plane.pos);
                 self.plane.wake = self.wakes.near(self.plane.pos, 150.0 + self.plane.spec.b, self.time);
             }
             // (Snow does not wet the glass or streak across it: only the liquid rain share does.)

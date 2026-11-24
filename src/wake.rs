@@ -49,6 +49,9 @@ struct Node {
     b0: f64,
     gamma0: f64,
     born: f64,
+    /// the ground's sea-level height under where it was laid (m): a wake
+    /// drifts a few hundred metres at most, so that stays its ground
+    ground: f64,
 }
 
 impl Node {
@@ -92,10 +95,12 @@ pub struct Wakes {
 }
 
 impl Wakes {
-    /// Lay, move and age the wakes. `wind(p)`: the steady wind at `p`;
-    /// `ground`: the ground's sea-level height round the player (m);
-    /// `player`: where the player is (wakes far from it are dropped).
-    pub fn step(&mut self, dt: f64, t: f64, sources: &[Source], wind: impl Fn(DVec3) -> DVec3, ground: f64, player: DVec3) {
+    /// Lay, move and age the wakes. `wind(p, agl)`: the steady wind at `p`,
+    /// `agl` metres above the ground; `ground(p)`: the ground's sea-level
+    /// height under `p` (m), if known, read where each node is laid;
+    /// `fallback`: the height to use where it is not (the ground round the
+    /// player); `player`: where the player is (wakes far from it are dropped).
+    pub fn step(&mut self, dt: f64, t: f64, sources: &[Source], wind: impl Fn(DVec3, f64) -> DVec3, ground: impl Fn(DVec3) -> Option<f64>, fallback: f64, player: DVec3) {
         for s in sources {
             let v = s.vel.length();
             if v < 20.0 || s.span <= 0.0 || s.mass <= 0.0 {
@@ -120,18 +125,19 @@ impl Wakes {
             let rho = 1.225 * (-alt.max(0.0) / 8500.0).exp();
             let b0 = std::f64::consts::FRAC_PI_4 * s.span;
             let gamma0 = s.mass * 9.81 / (rho * v * b0);
-            tr.nodes.push_back(Node { mid: s.pos, right, sep: b0, b0, gamma0, born: t });
+            let ground = ground(s.pos).unwrap_or(fallback);
+            tr.nodes.push_back(Node { mid: s.pos, right, sep: b0, b0, gamma0, born: t, ground });
         }
         let sigma = self.sigma;
         for tr in &mut self.trails {
             for n in &mut tr.nodes {
                 let g = n.gamma(t, sigma);
                 let up = n.mid.normalize();
-                let h = n.mid.length() - crate::geo::R - ground;
+                let h = n.mid.length() - crate::geo::R - n.ground;
                 let w = g / (std::f64::consts::TAU * n.sep);
                 // Near the ground the pair stops sinking and spreads apart.
                 let gnd = 1.0 - smooth(0.5 * n.b0, 1.5 * n.b0, h);
-                n.mid += (wind(n.mid) - up * (w * (1.0 - gnd))) * dt;
+                n.mid += (wind(n.mid, h.max(2.0)) - up * (w * (1.0 - gnd))) * dt;
                 n.sep += w * gnd * 2.0 * dt;
             }
             tr.nodes.retain(|n| t - n.born < LIFE && n.gamma(t, sigma) > 0.05 * n.gamma0 && n.mid.distance(player) < KEEP);
@@ -222,7 +228,7 @@ mod tests {
         let mut pos = start;
         while t < 30.0 {
             let src = Source { id: 1, pos, vel: north * 75.0, span: 64.4, mass: 250_000.0 };
-            w.step(dt, t, &[src], |_| DVec3::ZERO, ground, start);
+            w.step(dt, t, &[src], |_, _| DVec3::ZERO, |_| Some(ground), ground, start);
             pos = (pos + north * 75.0 * dt).normalize() * (R + alt);
             t += dt;
         }
@@ -264,7 +270,7 @@ mod tests {
         let mut w2 = w;
         let mut t2 = t;
         while t2 < t + 250.0 {
-            w2.step(0.5, t2, &[], |_| DVec3::ZERO, 0.0, start);
+            w2.step(0.5, t2, &[], |_, _| DVec3::ZERO, |_| None, 0.0, start);
             t2 += 0.5;
         }
         assert!(w2.near(at, 5000.0, t2).is_empty());
@@ -288,9 +294,9 @@ mod tests {
         let mut w = Wakes::default();
         let start = DVec3::Z * (R + 800.0);
         let src = Source { id: 7, pos: start, vel: DVec3::Y * 70.0, span: 35.0, mass: 60_000.0 };
-        w.step(0.05, 0.0, &[src], |_| DVec3::X * 5.0, 0.0, start);
+        w.step(0.05, 0.0, &[src], |_, _| DVec3::X * 5.0, |_| None, 0.0, start);
         for i in 1..200 {
-            w.step(0.05, i as f64 * 0.05, &[], |_| DVec3::X * 5.0, 0.0, start);
+            w.step(0.05, i as f64 * 0.05, &[], |_, _| DVec3::X * 5.0, |_| None, 0.0, start);
         }
         let n = &w.trails[0].nodes[0];
         assert!(((n.mid - start).x - 50.0).abs() < 1.0, "{}", (n.mid - start).x);

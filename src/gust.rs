@@ -1,7 +1,7 @@
 //! Turbulence as a field in space: a frozen von Kármán gust field that drifts
 //! with the wind, which the aircraft flies through. Any point can be sampled,
-//! so every part of the airframe (each wing strip, the tailplane, the fin, or
-//! a few probes on an aircraft without strips) feels the gust where it is.
+//! so every part of the airframe (probes at the CG, along each wing, at the
+//! nose and at the tail: see `plane.rs` `gust_probes`) feels the gust where it is.
 //! What a gust does to the aircraft then comes from its geometry rather than
 //! from tuned gains: a vertical gust that differs from one wing tip to the
 //! other rolls it, one that differs from the nose to the tail pitches it, a
@@ -56,6 +56,10 @@ pub struct GustField {
     /// the lifting surfaces' mean chord (m): eddies much smaller than it
     /// barely lift a wing (Sears), so their share is tapered
     chord: f64,
+    /// the last length scales `set` was given and their spectrum shares
+    /// (horizontal, vertical): the scales change rarely, the intensity every step
+    shares_h: (f64, [f64; SHELLS]),
+    shares_w: (f64, [f64; SHELLS]),
     /// how far the air mass has moved with the wind (planet frame, m): the
     /// field is frozen in the air, so it is sampled at (position - drift)
     pub drift: DVec3,
@@ -132,13 +136,19 @@ impl GustField {
                 }
             }
         }
-        Self { waves, k, dk, amp_h: [0.0; SHELLS], amp_w: [0.0; SHELLS], chord: 0.0, drift: DVec3::ZERO }
+        Self { waves, k, dk, amp_h: [0.0; SHELLS], amp_w: [0.0; SHELLS], chord: 0.0, shares_h: (f64::NAN, [0.0; SHELLS]), shares_w: (f64::NAN, [0.0; SHELLS]), drift: DVec3::ZERO }
     }
 
     /// The intensity (RMS, m/s) and length scale (m) of the horizontal and
     /// the vertical gusts the weather asks for here.
     pub fn set(&mut self, sigma_h: f64, len_h: f64, sigma_w: f64, len_w: f64) {
-        let (sh, sw) = (shares(&self.k, &self.dk, len_h), shares(&self.k, &self.dk, len_w));
+        if self.shares_h.0 != len_h {
+            self.shares_h = (len_h, shares(&self.k, &self.dk, len_h));
+        }
+        if self.shares_w.0 != len_w {
+            self.shares_w = (len_w, shares(&self.k, &self.dk, len_w));
+        }
+        let (sh, sw) = (self.shares_h.1, self.shares_w.1);
         // Each wave carries a²/2 of variance along its direction; a shell's
         // two triads put 2 · a²/2 on every component.
         let per = (PER / 3) as f64;
@@ -154,12 +164,10 @@ impl GustField {
     /// Carry the field along with the air (`wind`, planet frame m/s) and let
     /// its eddies turn over at the intensity `sigma` (m/s).
     pub fn advance(&mut self, dt: f64, wind: DVec3, sigma: f64) {
+        // (Never reset: that would jump the gust at every probe at once. The
+        // positions are planet-frame, millions of metres out, so a drift of
+        // even thousands of km costs no precision in f64.)
         self.drift += wind * dt;
-        // Keep it near the origin, so the phases keep their precision (the
-        // field is random everywhere, so moving it is harmless).
-        if self.drift.length_squared() > 1.0e10 {
-            self.drift = DVec3::ZERO;
-        }
         let s = sigma.clamp(0.0, 15.0) * dt;
         for w in &mut self.waves {
             w.phase = (w.phase + w.turn * s).rem_euclid(std::f64::consts::TAU);
@@ -196,8 +204,6 @@ mod tests {
 
     #[test]
     fn the_gusts_have_the_intensity_asked_for() {
-        let mut f = GustField::new(7);
-        f.set(2.0, 400.0, 1.0, 100.0);
         // Many seeds' worth of independent stretches.
         let (mut h, mut w, mut n) = (0.0, 0.0, 0.0);
         for s in 0..40u64 {
